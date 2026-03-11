@@ -122,6 +122,7 @@ def patchify(x: Tensor, patch_size: int) -> Tensor:
     # do not use loop.
     num_patches_h = x.size(1) // patch_size
     num_patches_w = x.size(2) // patch_size
+    # element들의 순서를 고려하면서 자르기 위해 자른 뒤 permute를 활용하여 순서를 변경한다.
     x2 = x.view(x.size(0), num_patches_h, patch_size, num_patches_w, patch_size, x.size(3))
     x2 = x2.permute(0, 1, 3, 2, 4, 5).contiguous()
     return x2
@@ -146,6 +147,7 @@ def unpatchify(patches: Tensor) -> Tensor:
     original_h = patches.size(1) * patches.size(3)
     original_w = patches.size(2) * patches.size(4)
 
+    # patch할 때 순서를 변경했기 때문에 원래 순서로 변경한 뒤 합쳐야 한다
     patches = patches.permute(0, 1, 3, 2, 4, 5).contiguous()
     x2 = patches.reshape(patches.size(0), original_h, original_w, patches.size(5))
     return x2
@@ -258,18 +260,13 @@ def masked_average(x: Tensor, mask: Tensor) -> Tensor:
     # do not use loop
     # there exist many edge cases to handle
 
-    # unsqueeze must be assigned; also cast mask to float for multiplication
-    print(x)
-    print(mask)
-    mask = mask.unsqueeze(-1)           # (B, T) -> (B, T, 1)
-    x = x * mask                        # broadcast over D
-    num_true = mask.sum(dim=1, keepdim=True)  # shape (B, 1, 1)
+    mask = mask.unsqueeze(-1).float()           # (B, T) -> (B, T, 1)
+    x = x * mask                                # mask가 (B, T, D)로 브로드캐스팅 되어 계산된다.
+    num_true = mask.sum(dim=1, keepdim=True)    # shape (B, 1, 1)
 
-    print(num_true)
-    print(x / num_true)
-    print(mask)
-
-    return x / num_true
+    x_sum = x.sum(dim=1)                        # sum over T: (B, D)
+    eps = float(1e-8)                           # 분모가 0이 되는 상황을 방지하기 위해 위에서 쓴 방식 차용 
+    return x_sum / (num_true.squeeze(-1) + eps) # (B, D) / (B, 1) = (B, D)
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +315,7 @@ def topk_extract(logits: Tensor, k: int) -> Tuple[Tensor, Tensor]:
     # do not use loop
 
     sorted_values, sorted_indices = torch.sort(logits, dim=-1, descending=True)
+    # 슬라이싱을 통해 (B, T, k) 크기로 잘라냄
     return sorted_values[:,:,:k], sorted_indices[:,:,:k]
 
 
@@ -373,7 +371,33 @@ def pad_and_stack(sequences: List[Tensor]) -> Tuple[Tensor, Tensor]:
         tensor([[ True,  True, False, False, False],
                 [ True,  True,  True,  True,  True]])
     """
-    raise NotImplementedError
+    # max_T 값을 찾는다
+    max_T = max(seq.size(0) for seq in sequences)
+    
+    # mask는 (시퀀스의 크기, max_T)로 생성함
+    N = len(sequences)
+    D = sequences[0].size(1)
+    mask = torch.zeros((N, max_T), dtype=torch.bool)
+    
+    # 시퀀스를 루프로 돌면서 패드를 수행
+    padded_list = []
+    for i, seq in enumerate(sequences):
+        T = seq.size(0)
+        mask[i, :T] = True
+        
+        # torch.zeros(max_T - T, D)으로 텐서를 만들고 합침 -> padded
+        if T < max_T:
+            pad_tensor = torch.zeros((max_T - T, D), dtype=seq.dtype)
+            padded_seq = torch.cat([seq, pad_tensor], dim=0)
+        else:
+            padded_seq = seq
+        
+        padded_list.append(padded_seq)
+    
+    # 그렇게 padded된 모든 텐서를 합침
+    padded = torch.stack(padded_list, dim=0)
+    
+    return padded, mask
 
 
 # ===========================================================================
@@ -403,17 +427,12 @@ def _test_all():
     except NotImplementedError:
         print("[SKIP] Task 1: not implemented")
 
-    # Task 2: Pairwise Dot (추가 테스트)
+    # Task 2
     try:
-        # 2개의 3차원 벡터 (B=2, D=3)
         a = torch.tensor([[1., 2., 3.], 
                           [4., 5., 6.]])
         out = pairwise_dot(a)
-        
-        # 1. Shape 확인: (B, B) 형태여야 함
         check("Task 2: shape", out.shape == torch.Size([2, 2]))
-        
-        # 2. Values 확인: 
         expected = torch.tensor([[14., 32.], [32., 77.]])
         check("Task 2: values", torch.allclose(out, expected))
     except NotImplementedError:
@@ -440,7 +459,6 @@ def _test_all():
         check("Task 4: unpatched shape",  out2.shape == torch.Size([1, 8, 8, 1]))
     except NotImplementedError:
         print("[SKIP] Task 4: not implemented")
-    # TODO add a test case
 
     # Task 5
     try:
@@ -452,19 +470,11 @@ def _test_all():
 
     # Task 6
     try:
-        # (B=1, C=2, H=4, W=4) 형태의 임의의 텐서 생성
         x = torch.randn(1, 2, 4, 4)
         out = channel_normalize(x)
-        
-        # 1. Shape 확인: 입력과 출력이 같아야 함
         check("Task 6: shape", out.shape == torch.Size([1, 2, 4, 4]))
-        
-        # 2. Values 확인: 각 채널의 평균은 0, 표준편차는 1이어야 함
-        # dim=(2,3)은 H, W 공간 차원을 의미함
         mean = out.mean(dim=(2, 3))
         std = out.std(dim=(2, 3))
-        
-        # torch.allclose를 사용하여 부동 소수점 오차 범위 내에서 0과 1인지 확인
         check("Task 6: mean is 0", torch.allclose(mean, torch.zeros_like(mean), atol=1e-6))
         check("Task 6: std is 1", torch.allclose(std, torch.ones_like(std), atol=1e-6))
     except NotImplementedError:
@@ -480,18 +490,10 @@ def _test_all():
 
     # Task 8
     try:
-        # 1. 입력 데이터 준비 (B=1, T=3, D=2) 
         x = torch.tensor([[[1., 1.], [2., 2.], [3., 3.]]], dtype=torch.float)
-        
-        # 2. 마스크 준비 (B=1, T=3): 마지막 [3., 3.]은 무시함
         mask = torch.tensor([[True, True, False]], dtype=torch.bool)
-        
         out = masked_average(x, mask)
-        
-        # 3. Shape 확인: 시간(T) 축이 평균으로 요약되어 (B, D)가 되어야 함 
         check("Task 8: shape", out.shape == torch.Size([1, 2]))
-        
-        # 4. Values 확인: 유효한 [1, 1]과 [2, 2]의 평균인 [1.5, 1.5]인지 검증
         expected = torch.tensor([[1.5000, 1.5000]])
         check("Task 8: values", torch.allclose(out, expected))
         
@@ -508,7 +510,16 @@ def _test_all():
         print("[SKIP] Task 9: not implemented")
 
     # Task 10
-    # TODO add a test case
+    try:
+        logits = torch.tensor([[[3., 1., 4., 1., 5., 9., 2., 6.]]])
+        k = 3
+        vals, idx = topk_extract(logits, k)
+        check("Task 10: values shape", vals.shape == torch.Size([1, 1, 3]))
+        check("Task 10: indices shape", idx.shape == torch.Size([1, 1, 3]))
+        check("Task 10: values", torch.allclose(vals, torch.tensor([[[9., 6., 5.]]])))
+        check("Task 10: indices", torch.equal(idx, torch.tensor([[[5, 7, 4]]])))
+    except NotImplementedError:
+        print("[SKIP] Task 10: not implemented")
 
     # Task 11
     try:
@@ -520,7 +531,16 @@ def _test_all():
         print("[SKIP] Task 11: not implemented")
 
     # Task 12
-    # TODO add a test case
+    try:
+        seqs = [torch.ones(2, 4), torch.ones(5, 4)]
+        padded, mask = pad_and_stack(seqs)
+        check("Task 12: padded shape", padded.shape == torch.Size([2, 5, 4]))
+        check("Task 12: mask shape", mask.shape == torch.Size([2, 5]))
+        expected_mask = torch.tensor([[True, True, False, False, False],
+                                      [True, True, True, True, True]])
+        check("Task 12: mask values", torch.equal(mask, expected_mask))
+    except NotImplementedError:
+        print("[SKIP] Task 12: not implemented")
 
     # Summary
     print(f"\nResults: {passed} passed, {failed} failed.")
