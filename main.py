@@ -29,7 +29,12 @@ def pairwise_add(a: Tensor, b: Tensor) -> Tensor:
         tensor([[11., 21.],
                 [12., 22.]])
     """
-    raise NotImplementedError
+    a = a.unsqueeze(2)  # (B, D) -> (B, D, 1) 차원 확장 
+    b = b.unsqueeze(1)  # (B, D) -> (B, 1, D) 차원 확장
+    # 크기가 1인 차원을 생성하여 브로드캐스팅 기능을 활용하여 차원을 (B, D, D)로 맞춰 pairwise
+    c = a + b           # (B, D, D)
+
+    return c
 
 
 # ---------------------------------------------------------------------------
@@ -53,8 +58,15 @@ def pairwise_dot(x: Tensor) -> Tensor:
         tensor([[1., 0., 1.],
                 [0., 1., 1.],
                 [1., 1., 2.]])
+
+                [1 0] [1 0 1]
+                [0 1] [0 1 1]
+                [1 1]
     """
-    raise NotImplementedError
+
+    pairwise_dot = x @ x.transpose(0, 1)
+
+    return pairwise_dot
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +92,12 @@ def channel_affine(x: Tensor, weight: Tensor, bias: Tensor) -> Tensor:
         >>> channel_affine(x, w, b)[0, :, 0, 0]
         tensor([ 1.,  3.,  2.])
     """
-    raise NotImplementedError
+    # 4차원 텐서와 1차원 weight, bias를 계산하기 위해 view를 활용해 차원을 맞춘다.
+    weight = weight.view(1, -1, 1, 1)   # (C,) -> (1, C, 1, 1)
+    bias = bias.view(1, -1, 1, 1)       # (C,) -> (1, C, 1, 1)
+
+    y = x * weight + bias
+    return y
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +120,11 @@ def patchify(x: Tensor, patch_size: int) -> Tensor:
         torch.Size([1, 2, 2, 4, 4, 1])
     """
     # do not use loop.
-    raise NotImplementedError
+    num_patches_h = x.size(1) // patch_size
+    num_patches_w = x.size(2) // patch_size
+    x2 = x.view(x.size(0), num_patches_h, patch_size, num_patches_w, patch_size, x.size(3))
+    x2 = x2.permute(0, 1, 3, 2, 4, 5).contiguous()
+    return x2
 
 
 def unpatchify(patches: Tensor) -> Tensor:
@@ -122,7 +143,12 @@ def unpatchify(patches: Tensor) -> Tensor:
         >>> torch.allclose(unpatchify(patches), x)
         True
     """
-    raise NotImplementedError
+    original_h = patches.size(1) * patches.size(3)
+    original_w = patches.size(2) * patches.size(4)
+
+    patches = patches.permute(0, 1, 3, 2, 4, 5).contiguous()
+    x2 = patches.reshape(patches.size(0), original_h, original_w, patches.size(5))
+    return x2
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +157,10 @@ def unpatchify(patches: Tensor) -> Tensor:
 def l2_normalize(x: Tensor, eps: float = 1e-8) -> Tensor:
     """Normalise each row of x to unit L2 norm.
 
+    L2 norm을 구해서 길이가 1이 되도록 나눔
+
     Args:
-        x:   Tensor of shape (B, D)
+        x:   Tensor of shape (B, D) -> input
         eps: Small constant for numerical stability.
 
     Returns:
@@ -144,7 +172,13 @@ def l2_normalize(x: Tensor, eps: float = 1e-8) -> Tensor:
         tensor([0.6000, 0.8000])
     """
     # do not use torch.nn.functional.normalize
-    raise NotImplementedError
+
+    # L2 norm = sqrt(sum(x_i^2))
+    norm = torch.sum(x*x, dim=1, keepdim=True)      # 1번 축으로 더해야함 (B, 1)
+    norm = torch.sqrt(norm + eps)
+
+    x = x / norm                                    # (B, D) / (B, 1) = (B, D)
+    return x
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +198,12 @@ def channel_normalize(x: Tensor, eps: float = 1e-8) -> Tensor:
         Tensor of shape (B, C, H, W)
     """
     # do not use torch.nn.functional.normalize
-    raise NotImplementedError
+
+    x_mean = x.mean(dim=(2,3), keepdim=True)
+    x_std = x.std(dim=(2,3), keepdim=True)
+
+    x_norm = x.subtract(x_mean).divide(x_std + eps)
+    return x_norm
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +228,11 @@ def moving_average_update_(running: Tensor, new_val: Tensor, momentum: float) ->
         tensor([0.1000, 0.1000, 0.1000])
     """
     # use torch inplace ops
-    raise NotImplementedError
+    # in-place로 계산하기 위해 _를 붙여서 계산한다.
+    running.mul_(1 - momentum).add_(momentum * new_val)
+    # running  = (1 - momentum)
+
+    return running
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +257,13 @@ def masked_average(x: Tensor, mask: Tensor) -> Tensor:
     """
     # do not use loop
     # there exist many edge cases to handle
-    raise NotImplementedError
+
+    # unsqueeze must be assigned; also cast mask to float for multiplication
+    mask = mask.unsqueeze(-1)           # (B, T) -> (B, T, 1)
+    x = x * mask                        # broadcast over D
+    num_true = mask.sum(dim=1, keepdim=True)  # shape (B, 1, 1)
+
+    return 
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +281,9 @@ def entropy(probs: Tensor, eps: float = 1e-8) -> Tensor:
         Tensor of shape (B, T) containing the entropy for each position.
     """
     # do not use loop
-    raise NotImplementedError
-
+    entropy = -probs * torch.log(probs + eps)
+    entropy = torch.sum(entropy, dim=2)         #(B, T, V) -> (B, T)
+    return entropy
 
 # ---------------------------------------------------------------------------
 # Task 10 : Top-K Extraction
@@ -257,10 +307,12 @@ def topk_extract(logits: Tensor, k: int) -> Tuple[Tensor, Tensor]:
         >>> idx
         tensor([[[5, 7, 4]]])
     """
-        # do not use torch.topk
+    # do not use torch.topk
     # use torch.sort or torch.argsort.
     # do not use loop
-    raise NotImplementedError
+
+    sorted_values, sorted_indices = torch.sort(logits, dim=-1, descending=True)
+    return sorted_values[:,:,:k], sorted_indices[:,:,:k]
 
 
 # ---------------------------------------------------------------------------
@@ -285,8 +337,10 @@ def relative_position_indices(T: int) -> Tensor:
                 [1, 2, 3],
                 [0, 1, 2]])
     """
-    raise NotImplementedError
-
+    indices = torch.arange(0, T, step=1)  # (T, )
+    distance = indices.unsqueeze(0) - indices.unsqueeze(1)  # (1, T) - (T, 1) = (T, T)
+    distance += (T-1)
+    return distance
 
 # ---------------------------------------------------------------------------
 # Task 12 : Pad and Stack Variable-Length Sequences
@@ -343,8 +397,21 @@ def _test_all():
     except NotImplementedError:
         print("[SKIP] Task 1: not implemented")
 
-    # Task 2
-    # TODO add a test case
+    # Task 2: Pairwise Dot (추가 테스트)
+    try:
+        # 2개의 3차원 벡터 (B=2, D=3)
+        a = torch.tensor([[1., 2., 3.], 
+                          [4., 5., 6.]])
+        out = pairwise_dot(a)
+        
+        # 1. Shape 확인: (B, B) 형태여야 함
+        check("Task 2: shape", out.shape == torch.Size([2, 2]))
+        
+        # 2. Values 확인: 
+        expected = torch.tensor([[14., 32.], [32., 77.]])
+        check("Task 2: values", torch.allclose(out, expected))
+    except NotImplementedError:
+        print("[SKIP] Task 2: not implemented")
 
     # Task 3
     try:
@@ -358,6 +425,15 @@ def _test_all():
         print("[SKIP] Task 3: not implemented")
 
     # Task 4
+    try:
+        x = torch.arange(1*8*8*1, dtype=torch.float).reshape(1, 8, 8, 1)
+        p = 4
+        out = patchify(x, p)
+        check("Task 4: patched shape",  out.shape == torch.Size([1, 2, 2, 4, 4, 1]))
+        out2 = unpatchify(out)
+        check("Task 4: unpatched shape",  out2.shape == torch.Size([1, 8, 8, 1]))
+    except NotImplementedError:
+        print("[SKIP] Task 4: not implemented")
     # TODO add a test case
 
     # Task 5
@@ -369,7 +445,24 @@ def _test_all():
         print("[SKIP] Task 5: not implemented")
 
     # Task 6
-    # TODO add a test case
+    try:
+        # (B=1, C=2, H=4, W=4) 형태의 임의의 텐서 생성
+        x = torch.randn(1, 2, 4, 4)
+        out = channel_normalize(x)
+        
+        # 1. Shape 확인: 입력과 출력이 같아야 함
+        check("Task 6: shape", out.shape == torch.Size([1, 2, 4, 4]))
+        
+        # 2. Values 확인: 각 채널의 평균은 0, 표준편차는 1이어야 함
+        # dim=(2,3)은 H, W 공간 차원을 의미함
+        mean = out.mean(dim=(2, 3))
+        std = out.std(dim=(2, 3))
+        
+        # torch.allclose를 사용하여 부동 소수점 오차 범위 내에서 0과 1인지 확인
+        check("Task 6: mean is 0", torch.allclose(mean, torch.zeros_like(mean), atol=1e-6))
+        check("Task 6: std is 1", torch.allclose(std, torch.ones_like(std), atol=1e-6))
+    except NotImplementedError:
+        print("[SKIP] Task 6: not implemented")
 
     # Task 7
     try:
@@ -380,7 +473,24 @@ def _test_all():
         print("[SKIP] Task 7: not implemented")
 
     # Task 8
-    # TODO add a test case
+    try:
+        # 1. 입력 데이터 준비 (B=1, T=3, D=2) 
+        x = torch.tensor([[[1., 1.], [2., 2.], [3., 3.]]], dtype=torch.float)
+        
+        # 2. 마스크 준비 (B=1, T=3): 마지막 [3., 3.]은 무시함
+        mask = torch.tensor([[True, True, False]], dtype=torch.bool)
+        
+        out = masked_average(x, mask)
+        
+        # 3. Shape 확인: 시간(T) 축이 평균으로 요약되어 (B, D)가 되어야 함 
+        check("Task 8: shape", out.shape == torch.Size([1, 2]))
+        
+        # 4. Values 확인: 유효한 [1, 1]과 [2, 2]의 평균인 [1.5, 1.5]인지 검증
+        expected = torch.tensor([[1.5000, 1.5000]])
+        check("Task 8: values", torch.allclose(out, expected))
+        
+    except NotImplementedError:
+        print("[SKIP] Task 8: not implemented")
 
     # Task 9
     try:
