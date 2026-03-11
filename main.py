@@ -259,11 +259,17 @@ def masked_average(x: Tensor, mask: Tensor) -> Tensor:
     # there exist many edge cases to handle
 
     # unsqueeze must be assigned; also cast mask to float for multiplication
+    print(x)
+    print(mask)
     mask = mask.unsqueeze(-1)           # (B, T) -> (B, T, 1)
     x = x * mask                        # broadcast over D
     num_true = mask.sum(dim=1, keepdim=True)  # shape (B, 1, 1)
 
-    return 
+    print(num_true)
+    print(x / num_true)
+    print(mask)
+
+    return x / num_true
 
 
 # ---------------------------------------------------------------------------
