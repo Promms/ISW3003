@@ -36,7 +36,24 @@ def count_params_and_buffers(model: nn.Module):
     Args:
         model (nn.Module): The model to inspect.
     """
-    pass
+    # model.parameters() yields all learnable parameter tensors
+    num_params = 0
+    for p in model.parameters():
+        if p is not None:
+            num_params += p.numel()
+
+    # model.buffers() yields all registered buffer tensors
+    num_buffers = 0
+    for b in model.buffers():
+        if b is not None:
+            num_buffers += b.numel()
+
+    print("=" * 60)
+    print("[Task 1] Parameter and Buffer Counts")
+    print("=" * 60)
+    print(f"  Number of parameters : {num_params}")
+    print(f"  Number of buffers    : {num_buffers}")
+    print()
 
 
 def print_stage_parameters(model: nn.Module, keyword: str):
@@ -48,7 +65,24 @@ def print_stage_parameters(model: nn.Module, keyword: str):
     Args:
         model (nn.Module): The model to inspect.
     """
-    pass
+    print("=" * 60)
+    print('[Task 2] Parameters with "layer" in their name')
+    print("=" * 60)
+
+    # named_parameters() yields (name, parameter) pairs for all parameters
+    stage_params = []
+    for param_name, param in model.named_parameters():
+        if keyword in param_name:
+            stage_params.append((param_name, param))
+
+    if not stage_params:
+        print(f"  No parameters containing '{keyword}' were found.")
+    else:
+        for name, param in stage_params:
+            print(f"  {name:60s}  shape={param.shape}")
+
+    print(f"\n  Total: {len(stage_params)} parameter(s) with '{keyword}' in name")
+    print()
 
 
 def split_by_dimensionality(model: nn.Module, verbose: bool = True):
@@ -66,7 +100,24 @@ def split_by_dimensionality(model: nn.Module, verbose: bool = True):
         low_dim  (list[tuple[str, Parameter]]): 1-D or lower parameters.
         high_dim (list[tuple[str, Parameter]]): 2-D or higher parameters.
     """
-    return None, None
+    low_dim = []
+    high_dim = []
+
+    for name, param in model.named_parameters():
+        if param is None:
+            continue
+        if param.ndim <= 1:
+            low_dim.append((name, param))
+        else:
+            high_dim.append((name, param))
+
+    if verbose:
+        print("=" * 60)
+        print(f"low_dim: {len(low_dim)} params")
+        print(f"high_dim: {len(high_dim)} params")
+        print("=" * 60)
+
+    return low_dim, high_dim
 
 
 # ---------------------------------------------------------------------------

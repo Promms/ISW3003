@@ -41,7 +41,9 @@ def make_pre_hook(module_name: str):
         hook (callable): The pre-hook function.
     """
     def hook(module: nn.Module, input: tuple):
-        pass
+        # input is a tuple of tensors passed to forward()
+        input_shapes = [tuple(t.shape) for t in input if isinstance(t, torch.Tensor)]
+        print(f"  [pre_hook]  {module_name:45s}  input={input_shapes}")
     return hook
 
 
@@ -58,9 +60,7 @@ def make_post_hook(module_name: str):
     Returns:
         hook (callable): The post-hook function.
     """
-    def hook(module: nn.Module, input: tuple, output: torch.Tensor):
-        pass
-    return hook
+    pass
 
 
 def register_pre_hooks(model: nn.Module) -> list:
@@ -76,7 +76,13 @@ def register_pre_hooks(model: nn.Module) -> list:
     Returns:
         handles (list): List of RemovableHook handles.
     """
-    pass
+    handles = []
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Conv2d):
+            hook_fn = make_pre_hook(name)
+            handle = module.register_forward_pre_hook(hook_fn)
+            handles.append(handle)
+    return handles
 
 
 def remove_hooks(handles: list):
@@ -88,7 +94,9 @@ def remove_hooks(handles: list):
     Args:
         handles (list): List of RemovableHook handles to remove.
     """
-    pass  # use handle.remove()
+    for handle in handles:
+        handle.remove()
+    print(f"  Removed {len(handles)} hook(s).\n")
 
 
 def register_post_hooks(model: nn.Module) -> list:
@@ -137,7 +145,8 @@ if __name__ == "__main__":
     # Verify hooks are gone: a second forward pass should produce no output
     with torch.no_grad():
         _ = model(dummy_input)
-        
+    print("  (No hook output above — hooks successfully removed)\n")
+
     # -----------------------------------------------------------------------
     # (4) Register forward_hooks and run a forward pass
     # -----------------------------------------------------------------------

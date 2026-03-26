@@ -8,7 +8,7 @@ Tasks:
   (2) For those same layers, zero out the bottom 10% of weights by absolute magnitude.
   (3) Measure the overall sparsity of the entire model after pruning.
 """
-
+import torch
 import torch.nn as nn
 from torchvision.models import resnet34
 
@@ -36,7 +36,13 @@ def get_3x3_conv_layers(model: nn.Module):
     Returns:
         list[tuple[str, nn.Conv2d]]: (name, module) pairs for matching layers.
     """
-    return None
+    result = []
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Conv2d):
+            # kernel_size is stored as a tuple, e.g., (1, 1) or (3, 3)
+            if module.kernel_size == (3, 3):
+                result.append((name, module))
+    return result
 
 
 def count_and_measure_sparsity(conv_layers: list, verbose: bool = True) -> int:
@@ -50,7 +56,33 @@ def count_and_measure_sparsity(conv_layers: list, verbose: bool = True) -> int:
     Returns:
         total_count (int): Total number of scalar parameters across all layers.
     """
-    return 0
+    total_count = 0
+    total_zeros = 0
+
+    print("=" * 60)
+    print("[Task 1] 3x3 Conv2d layers — parameter count & sparsity")
+    print("=" * 60)
+
+    for name, module in conv_layers:
+        # Iterate over all parameters in this Conv2d (weight + bias if present)
+        for param_name, param in module.named_parameters():
+            num_elements = param.numel()
+            num_zeros = (param.data == 0).sum().item()
+
+            total_count += num_elements
+            total_zeros += num_zeros
+
+            sparsity = num_zeros / num_elements
+            if verbose:
+                print(f"  {name}.{param_name:10s}  "
+                    f"params={num_elements:8d}  sparsity={sparsity:.4f}")
+
+    overall_sparsity = total_zeros / total_count if total_count > 0 else 0.0
+    print(f"\n  Total params in 3x3 Conv2d : {total_count}")
+    print(f"  Overall sparsity           : {overall_sparsity:.4f}")
+    print()
+
+    return total_count
 
 
 def prune_bottom_10_percent(conv_layers: list, verbose: bool = True):
@@ -62,7 +94,15 @@ def prune_bottom_10_percent(conv_layers: list, verbose: bool = True):
     Args:
         conv_layers (list[tuple[str, nn.Conv2d]]): Layers to prune.
     """
-    pass
+    print("=" * 60)
+    print("[Task 2] Zeroing out bottom 10% by absolute magnitude (weights only)")
+    for name, layer in conv_layers:
+        weight = layer.weight
+        threshold = torch.quantile(weight.abs(), 0.1)
+        mask = weight < threshold
+        weight.data[mask] = 0
+    print("=" * 60)
+
 
 
 def measure_global_sparsity(model: nn.Module):
@@ -103,7 +143,7 @@ if __name__ == "__main__":
     conv3x3_layers = get_3x3_conv_layers(model)
 
     # (1) Count parameters and measure sparsity of 1x1 Conv2d layers
-    _ = count_and_measure_sparsity(conv3x3_layers)
+    count_and_measure_sparsity(conv3x3_layers)
 
     # (2) Zero out the bottom 10% of weights by absolute magnitude
     prune_bottom_10_percent(conv3x3_layers)

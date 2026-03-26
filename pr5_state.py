@@ -65,22 +65,27 @@ def save_state_dict(model: nn.Module, path: str = "model.pt"):
         model (nn.Module): The model whose state_dict will be saved.
         path  (str)      : File path for saving (default: "model.pt").
     """
-    pass
+    torch.save(model.state_dict(), path)
+    print("=" * 60)
+    print("[Task 1] Saved state_dict")
+    print("=" * 60)
+    print(f"  Saved to '{path}'")
+    print()
 
 
-def load_state_dict(model: nn.Module, path: str = "model.pt"):
+def load_and_verify(original_model: nn.Module, path: str = "model.pt"):
     """
     (2) Load the saved state_dict into a fresh model and verify that
     the outputs for a fixed input are identical to the original model.
 
     Args:
-        model          (nn.Module): The original model to compare against.
+        original_model (nn.Module): The original model to compare against.
         path           (str)      : File path of the saved state_dict.
     """
     pass
 
 
-def wrap_model(net: nn.Module) -> WrappedModel:
+def wrap_model(net: nn.Module) -> "WrappedModel":
     """
     (3) Wrap the given model in a WrappedModel so its parameters live
     under the "module.*" namespace.
@@ -92,10 +97,15 @@ def wrap_model(net: nn.Module) -> WrappedModel:
         wrapped (WrappedModel): The wrapped model.
     """
     wrapped = WrappedModel(net)
+
+    print("=" * 60)
+    print("[Task 3] Wrapped model structure")
+    print("=" * 60)
+    print()
     return wrapped
 
 
-def remap_and_load(wrapped_model: WrappedModel, path: str = "model.pt"):
+def remap_and_load(wrapped_model: "WrappedModel", path: str = "model.pt"):
     """
     (4) Remap the keys in the saved state_dict by prepending "module."
     to each key, then load it into the wrapped model.
@@ -124,10 +134,10 @@ if __name__ == "__main__":
     save_state_dict(model, path=SAVE_PATH)
 
     # (2) Load state_dict and verify outputs match
-    load_state_dict(model, path=SAVE_PATH)
+    loaded_model = load_and_verify(model, path=SAVE_PATH)
 
     # (3) Wrap the loaded model under self.module
-    wrapped = wrap_model(model)
+    wrapped = wrap_model(loaded_model)
 
     # (4) Remap keys and load into the wrapped model
     remap_and_load(wrapped, path=SAVE_PATH)

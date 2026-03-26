@@ -41,7 +41,23 @@ def freeze_first_two_stages(model: nn.Module, verbose: bool = True):
     Args:
         model (nn.Module): The model to modify in-place.
     """
-    pass
+    # Stages to freeze (closest to input first)
+    stages_to_freeze = [model.layer1, model.layer2]
+
+    for stage in stages_to_freeze:
+        for param in stage.parameters():
+            param.requires_grad = False  # freeze: detach from the computation graph
+
+    print("=" * 60)
+    print("[Task 1] Freezing layer1 and layer2 (first 2 stages)")
+    print("=" * 60)
+
+    if verbose:
+        # Show requires_grad status per named parameter
+        for name, param in model.named_parameters():
+            if "layer1" in name or "layer2" in name:
+                print(f"  {name:60s}  requires_grad={param.requires_grad}")
+    print()
 
 
 def freeze_1d_parameters(model: nn.Module, verbose: bool = True):
@@ -60,19 +76,6 @@ def freeze_1d_parameters(model: nn.Module, verbose: bool = True):
     pass
 
 
-def count_trainable_parameters(model: nn.Module) -> int:
-    """
-    (3) Count the number of trainable parameters after freezing.
-
-    Args:
-        model (nn.Module): Target model.
-
-    Returns:
-        count (int): The number of trainable parameters.
-    """
-    return 0
-
-
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -86,6 +89,3 @@ if __name__ == "__main__":
 
     # (2) Freeze all 1-D parameters and report trainable parameter count
     freeze_1d_parameters(model)
-
-    # (3) Count the number of trainable parameters.
-    count_trainable_parameters(model)
