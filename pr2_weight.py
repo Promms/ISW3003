@@ -97,10 +97,17 @@ def prune_bottom_10_percent(conv_layers: list, verbose: bool = True):
     print("=" * 60)
     print("[Task 2] Zeroing out bottom 10% by absolute magnitude (weights only)")
     for name, layer in conv_layers:
-        weight = layer.weight
+        weight = layer.weight.data
         threshold = torch.quantile(weight.abs(), 0.1)
-        mask = weight < threshold
-        weight.data[mask] = 0
+        mask = weight.abs() < threshold
+        
+        num_pruned = mask.sum().item()
+        total = weight.numel()
+
+        weight[mask] = 0.0
+
+        if verbose:
+            print(f" {name}: pruned {num_pruned}/{total} -> {100 * num_pruned / total:.2f}")
     print("=" * 60)
 
 

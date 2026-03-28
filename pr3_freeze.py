@@ -73,7 +73,10 @@ def freeze_1d_parameters(model: nn.Module, verbose: bool = True):
     Args:
         model (nn.Module): The model to modify in-place.
     """
-    pass
+    
+    for name, param in model.named_parameters():
+        if param.dim() == 1:
+        else:
 
 
 # ---------------------------------------------------------------------------
