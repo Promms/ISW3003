@@ -60,7 +60,11 @@ def make_post_hook(module_name: str):
     Returns:
         hook (callable): The post-hook function.
     """
-    pass
+    def hook(module: nn.Module, input: tuple, output: torch.Tensor):
+        input_shapes = [tuple(t.shape) for t in input if isinstance(t, torch.Tensor)]
+        output_shapes = tuple(output.shape)
+        print(f"  [post_hook]  {module_name:45s}  input={input_shapes}  output={output_shapes}")
+    return hook
 
 
 def register_pre_hooks(model: nn.Module) -> list:
@@ -109,7 +113,13 @@ def register_post_hooks(model: nn.Module) -> list:
     Returns:
         handles (list): List of RemovableHook handles.
     """
-    pass
+    handles = []
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Conv2d):
+            hook_fn = make_post_hook(name)
+            handle = module.register_forward_hook(hook_fn)
+            handles.append(handle)
+    return handles
 
 
 # ---------------------------------------------------------------------------

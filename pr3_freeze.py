@@ -73,10 +73,27 @@ def freeze_1d_parameters(model: nn.Module, verbose: bool = True):
     Args:
         model (nn.Module): The model to modify in-place.
     """
+
+    print("=" * 60)
+    print("[Task 2] Freezing 1D Parameters")
+    print("=" * 60)
     
+    num_trainable_params = 0
     for name, param in model.named_parameters():
-        if param.dim() == 1:
+        if param.dim() <= 1:
+            param.requires_grad = False
         else:
+            num_trainable_params += 1
+
+    if verbose:
+        for name, param in model.named_parameters():
+            if param.dim() <= 1:
+                print(f"  {name:60s}  requires_grad={param.requires_grad}")
+
+    print(f" Total requires_grad = True : {num_trainable_params}") 
+
+    print()
+    
 
 
 # ---------------------------------------------------------------------------

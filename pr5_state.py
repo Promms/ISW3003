@@ -82,7 +82,27 @@ def load_and_verify(original_model: nn.Module, path: str = "model.pt"):
         original_model (nn.Module): The original model to compare against.
         path           (str)      : File path of the saved state_dict.
     """
-    pass
+    
+    state = torch.load(path)
+    # 새 model을 생성
+    new_model = load_model()
+    new_model.load_state_dict(state)
+
+    original_model.eval()
+    new_model.eval()
+
+    test_input = torch.randn(1, 3, 224, 224)
+
+    # original model과의 결과 비교
+    with torch.no_grad():
+        out_ori = original_model(test_input)
+        out_new = new_model(test_input)
+
+    if(torch.allclose(out_ori, out_new)):
+        return new_model
+    else:
+        return None
+
 
 
 def wrap_model(net: nn.Module) -> "WrappedModel":
@@ -117,7 +137,13 @@ def remap_and_load(wrapped_model: "WrappedModel", path: str = "model.pt"):
         wrapped_model (WrappedModel): The target model to load weights into.
         path          (str)         : File path of the original state_dict.
     """
-    pass
+    state = torch.load(path)
+
+    # "conv1.weight" → "module.conv1.weight" 로 이름 바꾸기
+    remapped_state = {"module." + k: v for k, v in state.items()}
+
+    wrapped_model.load_state_dict(remapped_state)
+
 
 
 # ---------------------------------------------------------------------------
