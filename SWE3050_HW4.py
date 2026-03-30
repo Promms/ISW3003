@@ -77,7 +77,7 @@ print(f"w0: {w[0]}    w1: {w[1]}    w2:{w[2]}")
 print(f"w3: {w[3]}    w4: {w[4]}    w5:{w[5]}")
 
 if Query_Sigmoid >= 0.5:
-    print(f"This Sample is {Query_Sigmoid * 100}% class 1")W
+    print(f"This Sample is {Query_Sigmoid * 100}% class 1")
 else:
     print(f"This Sample is {(1 - Query_Sigmoid) * 100}% class 0")
 
