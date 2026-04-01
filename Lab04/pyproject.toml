@@ -1,0 +1,13 @@
+[project]
+name = "lab04"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.4.4",
+    "torch>=2.11.0",
+]
+
+[tool.ruff]
+line-length = 200 # Sets the line length to 120 characters
