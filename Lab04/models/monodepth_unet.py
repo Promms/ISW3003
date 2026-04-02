@@ -18,75 +18,24 @@ class MonoDepthUNet(nn.Module):
         super().__init__()
         # TODO: implement encoder-decoder with skip connections
 
-        self.enc1 = nn.Sequential(
-            conv3x3(in_channels, in_channels),
-            nn.BatchNorm2d(in_channels),
-            nn.ReLU(inplace=True),
+        def _make_block(in_c, mid_c, out_c):
+            return nn.Sequential(
+                conv3x3(in_c, mid_c, dilation=1),
+                nn.BatchNorm2d(mid_c),
+                nn.ReLU(inplace=True),
+                conv3x3(mid_c, out_c, dilation=1),
+                nn.BatchNorm2d(out_c),
+                nn.ReLU(inplace=True)
+            )
 
-            conv3x3(in_channels, base_channels),
-            nn.BatchNorm2d(base_channels),
-            nn.ReLU(inplace=True),
-        )
+        self.enc1 = _make_block(in_channels, in_channels, base_channels)
+        self.enc2 = _make_block(base_channels, base_channels*2, base_channels*2)
+        self.enc3 = _make_block(base_channels*2, base_channels*4, base_channels*4)
+        self.enc4 = _make_block(base_channels*4, base_channels*8, base_channels*8)
 
-        self.enc2 = nn.Sequential(
-            conv3x3(base_channels, base_channels*2),
-            nn.BatchNorm2d(base_channels*2),
-            nn.ReLU(inplace=True),
-
-            conv3x3(base_channels*2, base_channels*2),
-            nn.BatchNorm2d(base_channels*2),
-            nn.ReLU(inplace=True),
-        )
-
-        self.enc3 = nn.Sequential(
-            conv3x3(base_channels*2, base_channels*4),
-            nn.BatchNorm2d(base_channels*4),
-            nn.ReLU(inplace=True),
-
-            conv3x3(base_channels*4, base_channels*4),
-            nn.BatchNorm2d(base_channels*4),
-            nn.ReLU(inplace=True),
-        )
-
-        self.enc4 = nn.Sequential(
-            conv3x3(base_channels*4, base_channels*8),
-            nn.BatchNorm2d(base_channels*8),
-            nn.ReLU(inplace=True),
-
-            conv3x3(base_channels*8, base_channels*8),
-            nn.BatchNorm2d(base_channels*8),
-            nn.ReLU(inplace=True),
-        )
-
-        self.dec4 = nn.Sequential(
-            conv3x3(base_channels*12, base_channels*4),
-            nn.BatchNorm2d(base_channels*4),
-            nn.ReLU(inplace=True),
-
-            conv3x3(base_channels*4, base_channels*4),
-            nn.BatchNorm2d(base_channels*4),
-            nn.ReLU(inplace=True),
-        )
-
-        self.dec3 = nn.Sequential(
-            conv3x3(base_channels*6, base_channels*4),
-            nn.BatchNorm2d(base_channels*4),
-            nn.ReLU(inplace=True),
-
-            conv3x3(base_channels*4, base_channels*4),
-            nn.BatchNorm2d(base_channels*4),
-            nn.ReLU(inplace=True),
-        )
-
-        self.dec2 = nn.Sequential(
-            conv3x3(base_channels*5, base_channels*4),
-            nn.BatchNorm2d(base_channels*4),
-            nn.ReLU(inplace=True),
-
-            conv3x3(base_channels*4, base_channels*4),
-            nn.BatchNorm2d(base_channels*4),
-            nn.ReLU(inplace=True),
-        )
+        self.dec4 = _make_block(base_channels*12, base_channels*4, base_channels*4)
+        self.dec3 = _make_block(base_channels*6, base_channels*4, base_channels*4)
+        self.dec2 = _make_block(base_channels*5, base_channels*4, base_channels*4)
 
         self.maxpool2d = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
