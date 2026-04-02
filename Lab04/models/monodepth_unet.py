@@ -20,10 +20,10 @@ class MonoDepthUNet(nn.Module):
 
         def _make_block(in_c, mid_c, out_c):
             return nn.Sequential(
-                conv3x3(in_c, mid_c, dilation=1),
+                conv3x3(in_c, mid_c),
                 nn.BatchNorm2d(mid_c),
                 nn.ReLU(inplace=True),
-                conv3x3(mid_c, out_c, dilation=1),
+                conv3x3(mid_c, out_c),
                 nn.BatchNorm2d(out_c),
                 nn.ReLU(inplace=True)
             )
