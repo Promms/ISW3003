@@ -1,0 +1,25 @@
+model:
+  dropout: 0.5
+  num_classes: 200
+
+data:
+  dataset_name: "zh-plus/tiny-imagenet"
+  num_workers: 2
+  pin_memory: true
+
+training:
+  batch_size: 128
+  total_iters: 20000       # iteration-based training
+  log_interval: 50         # log train metrics to wandb every N iters
+  eval_interval: 500       # run val evaluation every N iters
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  lr_decay: 0.9997          # multiplicative factor applied every iteration
+
+wandb:
+  team: "khshim20-sungkyunkwan-university"
+  project: "osai-lab06"
+  run_name: "tim_v0"
+
+device: "cuda"
+seed: 42
