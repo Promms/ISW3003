@@ -17,8 +17,8 @@ training:
   lr_decay: 0.9997          # multiplicative factor applied every iteration
 
 wandb:
-  team: "khshim20-sungkyunkwan-university"
-  project: "osai-lab06"
+  team: "tmdgk115-sungkyunkwan-university"
+  project: "osai-lab05"
   run_name: "tim_v0"
 
 device: "cuda"

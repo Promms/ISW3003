@@ -16,9 +16,10 @@ class TruncatedResNet50(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
+        # 외부 parameter를 가져옴
         backbone = resnet50(weights=ResNet50_Weights.DEFAULT)
         named = dict(backbone.named_children())
-
+        # Stem, layer1, layer2만 셋팅
         self.initial_conv = nn.Sequential(
             named["conv1"],
             named["bn1"],
