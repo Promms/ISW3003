@@ -1,0 +1,26 @@
+model:
+  dropout: 0.5
+  num_classes: 10
+
+data:
+  dataset_name: "imagenette"
+  image_size: 160
+  num_workers: 2
+  pin_memory: true
+
+training:
+  batch_size: 16
+  total_iters: 20000       # iteration-based training
+  log_interval: 50         # log train metrics to wandb every N iters
+  eval_interval: 500       # run val evaluation every N iters
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  lr_decay: 0.9997          # multiplicative factor applied every iteration
+
+wandb:
+  team: "tmdgk115-sungkyunkwan-university"
+  project: "osai-lab05"
+  run_name: "test_1"
+
+device: "cuda"
+seed: 42
