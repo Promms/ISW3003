@@ -69,8 +69,8 @@ class VOCSegDataset(VOCSegmentation):
             image = TF.resize(image, (480, 640), interpolation=Image.BILINEAR)
             mask = TF.resize(mask, (480, 640), interpolation=Image.NEAREST)
 
-        # --- 텐서 변환 ---
-        image = TF.to_tensor(image)           # (3, H, W)
+        # 텐서 변환
+        image = TF.to_tensor(image)                      # (3, H, W)
         image = self.normalize(image)
 
         mask  = torch.from_numpy(np.array(mask)).long()  # (H, W), int64
@@ -78,21 +78,28 @@ class VOCSegDataset(VOCSegmentation):
         return image, mask
 
 
-def get_loader(root, year="2012", image_set="train",crop_size=512, batch_size=8, num_workers=2, download=False):
+def get_loader(root, years=["2007", "2012"], image_set="train", crop_size=320, batch_size=8, num_workers=2, download=False):
 
     is_train = (image_set == "train")
+    datasets = []
 
-    dataset = VOCSegDataset(
-        root=root,
-        year=year,
-        image_set=image_set,
-        crop_size=crop_size,
-        augment=is_train,
-        download=download,
-    )
+    for year in years:
+        # 2007과 2012의 dataset을 각각 생성
+        dataset = VOCSegDataset(
+            root=root,
+            year=year,
+            image_set=image_set,
+            crop_size=crop_size,
+            augment=is_train,
+            download=download,
+        )
+        datasets.append(dataset)
+    
+    # 두 dataset을 concat
+    combined_dataset = ConcatDataset(datasets)
 
     loader = DataLoader(
-        dataset,
+        combined_dataset,
         batch_size=batch_size,
         shuffle=is_train,
         num_workers=num_workers,
