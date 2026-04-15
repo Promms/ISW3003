@@ -9,3 +9,7 @@ main.ipynb
 
 # Virtual environments
 .venv
+
+# user
+Project01/data/VOCdevkit
+*.tar

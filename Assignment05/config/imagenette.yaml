@@ -10,17 +10,17 @@ data:
 
 training:
   batch_size: 16
-  total_iters: 20000       # iteration-based training
+  total_iters: 10000       # iteration-based training
   log_interval: 50         # log train metrics to wandb every N iters
-  eval_interval: 500       # run val evaluation every N iters
+  eval_interval: 250       # run val evaluation every N iters
   learning_rate: 1.0e-3
   weight_decay: 1.0e-4
-  lr_decay: 0.9997          # multiplicative factor applied every iteration
+  lr_decay: 0.9995          # multiplicative factor applied every iteration
 
 wandb:
   team: "tmdgk115-sungkyunkwan-university"
   project: "osai-lab05"
-  run_name: "test_1"
+  run_name: "lab05_2021312779"
 
 device: "cuda"
 seed: 42
