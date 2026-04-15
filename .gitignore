@@ -13,3 +13,4 @@ main.ipynb
 # user
 Project01/data/VOCdevkit
 *.tar
+*.claude
