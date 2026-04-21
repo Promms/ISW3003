@@ -47,7 +47,7 @@ def main():
     run.define_metric("*", step_metric="step")
 
     try:
-        # Train Data
+        # 학습 데이터
         train_loader = get_loader(
             root=cfg["data"]["root"],
             years=cfg["data"]["years"],
@@ -59,7 +59,7 @@ def main():
             download=cfg["data"]["download"],
         )
 
-        # Validation Data
+        # 검증 데이터
         val_loader = get_loader(
             root=cfg["data"]["root"],
             years=cfg["data"]["years"],
@@ -70,37 +70,49 @@ def main():
             pin_memory=cfg["data"]["pin_memory"],
         )
 
-        # Model
+        # 모델
         model = deeplab_v3(num_classes=cfg["model"]["num_classes"]).to(device)
 
-        # --- Log parameter counts once as run summary (static metadata) ---
+        # --- 파라미터 수를 run summary에 한 번만 기록 (정적 메타데이터) ---
         # param_stats = log_parameter_counts(model)
         # run.summary.update({f"params/{k}": v for k, v in param_stats.items()})
 
-        # --- Loss and optimizer ---
+        # --- 손실함수 및 옵티마이저 ---
         criterion = nn.CrossEntropyLoss(ignore_index=255)
-        optimizer = torch.optim.Adam(
+        optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=cfg["training"]["learning_rate"],
             weight_decay=cfg["training"]["weight_decay"],
         )
 
-        total_iters   = cfg["training"]["total_iters"]
-        log_interval  = cfg["training"]["log_interval"]
+        total_iters = cfg["training"]["total_iters"]
+        log_interval = cfg["training"]["log_interval"]
         eval_interval = cfg["training"]["eval_interval"]
-        lr_decay      = cfg["training"]["lr_decay"]
+        init_lr = cfg["training"]["learning_rate"]
 
-        # --- Rolling meters (reset every log_interval) ---
+        # --- 구간 평균 미터 (log_interval마다 초기화) ---
         loss_meter = AverageMeter()
         acc_meter  = AverageMeter()
 
-        # --- Best checkpoint tracking ---
+        # --- 최고 성능 체크포인트 추적 ---
         best_val_top1 = 0.0
-        ckpt_path = "checkpoints/best_checkpoint.pth"
+        ckpt_path = "/content/drive/MyDrive/checkpoints/best_checkpoint.pth"
 
-        # --- Iteration-based training loop ---
-        data_iter = iter(train_loader)
+        # --- 체크포인트 이어받기 ---
+        import os
         iter_count = 0
+        if cfg["training"]["resume"] and os.path.exists(ckpt_path):
+            ckpt = torch.load(ckpt_path, map_location=device)
+            model.load_state_dict(ckpt["model_state_dict"])
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            iter_count = ckpt["iter"]
+            best_val_top1 = ckpt.get("best_val_top1", 0.0)
+            print(f"체크포인트 불러옴: iter {iter_count}, best mIoU {best_val_top1:.4f}")
+        else:
+            print("처음부터 학습 시작")
+
+        # --- iteration 기반 학습 루프 ---
+        data_iter = iter(train_loader)
         model.train()
 
         while iter_count < total_iters:
@@ -118,9 +130,10 @@ def main():
             loss.backward()
             optimizer.step()
 
-            # Exponential LR decay: multiply every param group's lr by lr_decay
+            # Poly LR: lr × (1 - iter/total_iter)^0.9
+            poly_lr = init_lr * (1 - iter_count / total_iters) ** 0.9
             for pg in optimizer.param_groups:
-                pg["lr"] *= lr_decay
+                pg["lr"] = poly_lr
 
             n = images.size(0)
             loss_meter.update(loss.item(), n)
@@ -161,12 +174,18 @@ def main():
                 if is_best:
                     best_val_top1 = val_metrics["top1/mIoU"]
                     torch.save(
-                        {"iter": iter_count, "model_state_dict": model.state_dict(), "config": cfg},
+                        {
+                            "iter": iter_count,
+                            "model_state_dict": model.state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "best_val_top1": best_val_top1,
+                            "config": cfg,
+                        },
                         ckpt_path,
                     )
                 print(
                     f"  [Val] Loss: {val_metrics['loss']:.4f} | "
-                    f"Top-1: {val_metrics['top1/mIoU']:.2f}%"
+                    f"mIoU: {val_metrics['top1/mIoU']:.4f}"
                     + ("  [best]" if is_best else "")
                 )
     finally:

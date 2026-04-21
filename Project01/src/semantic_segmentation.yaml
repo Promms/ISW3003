@@ -2,7 +2,7 @@ model:
   num_classes: 21
 
 data:
-  root: "data"
+  root: "/content/data"
   dataset_name: "pascal_voc"
   years: ["2007", "2012"]
   num_workers: 2
@@ -11,13 +11,13 @@ data:
   pin_memory: true
 
 training:
-  batch_size: 8
-  total_iters: 10000       # iteration-based training
-  log_interval: 50         # log train metrics to wandb every N iters
-  eval_interval: 250       # run val evaluation every N iters
+  batch_size: 16
+  total_iters: 30000        # iteration 기반 학습
+  log_interval: 100         # N iter마다 train 지표 wandb 기록
+  eval_interval: 1000       # N iter마다 검증 실행
   learning_rate: 1.0e-3
   weight_decay: 1.0e-4
-  lr_decay: 0.9995          # multiplicative factor applied every iteration
+  resume: false             # true: 체크포인트 이어받기 / false: 처음부터 학습
 
 wandb:
   team: "tmdgk115-sungkyunkwan-university"
