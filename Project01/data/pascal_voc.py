@@ -78,7 +78,7 @@ class VOCSegDataset(VOCSegmentation):
         return image, mask
 
 
-def get_loader(root, years=["2007", "2012"], image_set="train", crop_size=320, batch_size=8, num_workers=2, download=False):
+def get_loader(root, years=["2007", "2012"], image_set="train", crop_size=320, batch_size=8, num_workers=2, pin_memory=True, download=False):
 
     is_train = (image_set == "train")
     datasets = []
@@ -103,7 +103,7 @@ def get_loader(root, years=["2007", "2012"], image_set="train", crop_size=320, b
         batch_size=batch_size,
         shuffle=is_train,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
         drop_last=is_train,  # train은 마지막 불완전 배치 버림
     )
 

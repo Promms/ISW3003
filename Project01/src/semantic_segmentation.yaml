@@ -1,0 +1,28 @@
+model:
+  num_classes: 21
+
+data:
+  root: "data"
+  dataset_name: "pascal_voc"
+  years: ["2007", "2012"]
+  num_workers: 2
+  crop_size: 320
+  download: false
+  pin_memory: true
+
+training:
+  batch_size: 8
+  total_iters: 10000       # iteration-based training
+  log_interval: 50         # log train metrics to wandb every N iters
+  eval_interval: 250       # run val evaluation every N iters
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  lr_decay: 0.9995          # multiplicative factor applied every iteration
+
+wandb:
+  team: "tmdgk115-sungkyunkwan-university"
+  project: "osai-project01"
+  run_name: "test1"
+
+device: "cuda"
+seed: 42

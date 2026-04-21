@@ -11,4 +11,6 @@ dependencies = [
     "wandb>=0.25.1",
     "datasets>=2.18.0",
     "pyyaml>=6.0",
+    "onnx>=1.21.0",
+    "onnxscript>=0.7.0",
 ]
