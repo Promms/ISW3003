@@ -45,6 +45,9 @@ def _apply_dilation_to_efficientnet(features: nn.Sequential, start: int, dilatio
 
     features[6]의 stride=2를 stride=1 + dilation=2로 교체하면
     output stride가 16으로 유지됩니다.
+
+    EfficientNet은 3x3과 5x5 depthwise conv를 혼용하므로 padding을 커널 크기에 맞게 계산해야 함.
+    (MobileNetV2는 3x3만 쓰므로 padding=dilation으로 충분했음)
     """
     for i in range(start, len(features)):
         for m in features[i].modules():
@@ -52,7 +55,9 @@ def _apply_dilation_to_efficientnet(features: nn.Sequential, start: int, dilatio
                 if m.stride == (2, 2):
                     m.stride = (1, 1)
                 m.dilation = (dilation, dilation)
-                m.padding = (dilation, dilation)
+                # padding = ((kernel - 1) * dilation) // 2  ← 커널 크기 고려
+                kh, kw = m.kernel_size
+                m.padding = ((kh - 1) * dilation // 2, (kw - 1) * dilation // 2)
 
 
 class ASPP(nn.Module):

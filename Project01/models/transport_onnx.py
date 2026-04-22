@@ -1,10 +1,10 @@
 import torch
 import onnx
-from deeplabv3plus_mobilenet import DeepLabV3PLUS_MobileNet # 파일명이 다르면 수정하세요
+from deeplabv3plus_efficientnet import DeepLabV3Plus_EfficientNet # 파일명이 다르면 수정하세요
 
 # 1. 모델 준비
 num_classes = 21 # 대회 규격에 맞는 클래스 수로 설정
-model = DeepLabV3PLUS_MobileNet(num_classes=num_classes)
+model = DeepLabV3Plus_EfficientNet(num_classes=num_classes)
 model.eval()
 
 # 2. 가상 입력 생성 (조건: [1, 3, 480, 640])

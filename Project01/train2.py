@@ -166,20 +166,23 @@ def main():
             iter_count += 1
 
             if iter_count % log_interval == 0:
-                current_lr = optimizer.param_groups[0]["lr"]
+                # param_groups: [0]=backbone_low, [1]=backbone_high, [2]=aspp, [3]=decoder
+                lr_backbone = optimizer.param_groups[0]["lr"]
+                lr_head     = optimizer.param_groups[2]["lr"]
                 run.log(
                     {
-                        "step":       iter_count,
-                        "train/loss": loss_meter.avg,
-                        "train/acc":  acc_meter.avg,
-                        "lr":         current_lr,
+                        "step":         iter_count,
+                        "train/loss":   loss_meter.avg,
+                        "train/acc":    acc_meter.avg,
+                        "lr/backbone": lr_backbone,
+                        "lr/head":     lr_head,
                     },
                 )
                 print(
                     f"Iter {iter_count:6d}/{total_iters} | "
                     f"Loss: {loss_meter.avg:.4f} | "
                     f"Accuracy: {acc_meter.avg:.2f}% | "
-                    f"LR: {current_lr:.2e}"
+                    f"LR(head): {lr_head:.2e} | LR(backbone): {lr_backbone:.2e}"
                 )
                 loss_meter.reset()
                 acc_meter.reset()
