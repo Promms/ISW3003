@@ -19,12 +19,12 @@ training:
   weight_decay: 1.0e-4
   resume: false             # true: 체크포인트 이어받기 / false: 처음부터 학습
   freeze_iters: 3000        # N iter까지 backbone freeze (0이면 비활성화)
-  backbone_lr_scale: 0.1   # backbone lr = learning_rate × backbone_lr_scale (head보다 작게)
+  backbone_lr_scale: 0.1   # backbone lr = learning_rate × backbone_lr_scale
 
 wandb:
   team: "tmdgk115-sungkyunkwan-university"
   project: "osai-project01"
-  run_name: "test1"
+  run_name: "efficientnet-b0"
 
 device: "cuda"
 seed: 42

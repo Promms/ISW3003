@@ -28,6 +28,51 @@ IGNORE_INDEX = 255
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD  = (0.229, 0.224, 0.225)
 
+_color_jitter = T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1)
+
+def train_augment(image, mask, crop_size):
+    # 무작위 좌우 반전 (p=0.5)
+    if random.random() > 0.5:
+        image = TF.hflip(image)
+        mask = TF.hflip(mask)
+
+    # 무작위 회전 (10도 이내) — image는 BILINEAR, mask는 NEAREST + fill=IGNORE_INDEX
+    angle = random.uniform(-10.0, 10.0)
+    image = TF.rotate(image, angle, interpolation=TF.InterpolationMode.BILINEAR, fill=0)
+    mask  = TF.rotate(mask, angle, interpolation=TF.InterpolationMode.NEAREST, fill=IGNORE_INDEX)
+
+    # 무작위 스케일링 0.5 ~ 2.0 (multi-scale training)
+    scale = random.uniform(0.5, 2.0)
+    new_h = int(image.height * scale)
+    new_w = int(image.width * scale)
+    image = TF.resize(image, (new_h, new_w), interpolation=Image.BILINEAR)
+    mask  = TF.resize(mask, (new_h, new_w), interpolation=Image.NEAREST)
+
+    # crop_size보다 작으면 padding
+    pad_h = max(0, crop_size - image.height)
+    pad_w = max(0, crop_size - image.width)
+    if pad_h > 0 or pad_w > 0:
+        image = TF.pad(image, (0, 0, pad_w, pad_h))
+        mask  = TF.pad(mask, (0, 0, pad_w, pad_h), fill=IGNORE_INDEX)
+
+    # 무작위 크롭 (crop_size × crop_size)
+    i, j, h, w = T.RandomCrop.get_params(image, output_size=(crop_size, crop_size))
+    image = TF.crop(image, i, j, h, w)
+    mask  = TF.crop(mask, i, j, h, w)
+
+    # 밝기, 대비, 채도 등을 무작위로 변경 (image에만)
+    image = _color_jitter(image)
+
+    return image, mask
+
+
+def val_transform(image, mask):
+    # 480 x 640 고정 resize (augmentation 없음)
+    image = TF.resize(image, (480, 640), interpolation=Image.BILINEAR)
+    mask  = TF.resize(mask, (480, 640), interpolation=Image.NEAREST)
+    return image, mask
+
+
 class VOCSegDataset(VOCSegmentation):
     def __init__(self, root, year="2012", image_set="train", crop_size=320, augment=False, download=False):
         super().__init__(root=root, year=year, image_set=image_set, download=download)
@@ -38,36 +83,10 @@ class VOCSegDataset(VOCSegmentation):
     def __getitem__(self, idx):
         image, mask = super().__getitem__(idx)
 
-        # augmentation (train only)
         if self.augment:
-            # horizontal flip
-            if random.random() > 0.5:
-                image = TF.hflip(image)
-                mask = TF.hflip(mask)
-
-            # random scale 0.5 ~ 2.0
-            scale = random.uniform(0.5, 2.0)
-            new_h = int(image.height * scale)
-            new_w = int(image.width * scale)
-            image = TF.resize(image, (new_h, new_w), interpolation=Image.BILINEAR)
-            mask  = TF.resize(mask, (new_h, new_w), interpolation=Image.NEAREST)
-
-            # crop_size보다 작아지면 padding 
-            pad_h = max(0, self.crop_size - image.height)
-            pad_w = max(0, self.crop_size - image.width)
-            if pad_h > 0 or pad_w > 0:
-                image = TF.pad(image, (0, 0, pad_w, pad_h))
-                mask = TF.pad(mask, (0, 0, pad_w, pad_h), fill=IGNORE_INDEX)
-
-            # random crop
-            i, j, h, w = T.RandomCrop.get_params(image, output_size=(self.crop_size, self.crop_size))
-            image = TF.crop(image, i, j, h, w)
-            mask = TF.crop(mask, i, j, h, w)
-
+            image, mask = train_augment(image, mask, self.crop_size)
         else:
-            # 480 x 640 Resize
-            image = TF.resize(image, (480, 640), interpolation=Image.BILINEAR)
-            mask = TF.resize(mask, (480, 640), interpolation=Image.NEAREST)
+            image, mask = val_transform(image, mask)
 
         # 텐서 변환
         image = TF.to_tensor(image)                      # (3, H, W)

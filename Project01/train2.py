@@ -3,19 +3,19 @@ import torch
 import torch.nn as nn
 import wandb
 
-from models.deeplabv3plus_mobilenet import deeplab_v3
+from models.deeplabv3plus_efficientnet import deeplab_v3_efficientnet
 from data.pascal_voc import get_loader
 from utils.metrics import accuracy, mIoU, AverageMeter
 from utils.diceloss import CEDiceLoss
 
 
-def load_config(path: str = "src/semantic_segmentation.yaml") -> dict:
+def load_config(path: str = "src/semantic_segmentation_efficientnet.yaml") -> dict:
     with open(path) as f:
         return yaml.safe_load(f)
 
 
 def set_backbone_requires_grad(model: nn.Module, requires_grad: bool) -> None:
-    # Backbone (MobileNetV2) 파라미터의 requires_grad를 일괄 변경
+    # Backbone (EfficientNet-B0) 파라미터의 requires_grad를 일괄 변경
     for param in model.backbone_low.parameters():
         param.requires_grad = requires_grad
     for param in model.backbone_high.parameters():
@@ -38,9 +38,9 @@ def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.devic
         acc_meter.update(accuracy(logits, labels), n)
         mIoU_meter.update(mIoU(logits, labels, num_classes), n)
 
-
     model.train()
     return {"loss": loss_meter.avg, "acc": acc_meter.avg, "top1/mIoU": mIoU_meter.avg}
+
 
 def main():
 
@@ -80,12 +80,8 @@ def main():
             pin_memory=cfg["data"]["pin_memory"],
         )
 
-        # 모델
-        model = deeplab_v3(num_classes=cfg["model"]["num_classes"]).to(device)
-
-        # --- 파라미터 수를 run summary에 한 번만 기록 (정적 메타데이터) ---
-        # param_stats = log_parameter_counts(model)
-        # run.summary.update({f"params/{k}": v for k, v in param_stats.items()})
+        # 모델 (EfficientNet-B0 백본)
+        model = deeplab_v3_efficientnet(num_classes=cfg["model"]["num_classes"]).to(device)
 
         # --- Backbone freeze (Stage 1) ---
         freeze_iters = cfg["training"].get("freeze_iters", 0)
@@ -97,8 +93,8 @@ def main():
         criterion = CEDiceLoss(num_classes=cfg["model"]["num_classes"], ignore_index=255, dice_weight=1.0)
 
         # Differential LR: pretrained backbone은 작은 lr, 새로 학습하는 head는 큰 lr
-        head_lr     = cfg["training"]["learning_rate"]          # 1e-3
-        backbone_lr = head_lr * cfg["training"]["backbone_lr_scale"]  # 1e-3 × 0.1 = 1e-4
+        head_lr     = cfg["training"]["learning_rate"]
+        backbone_lr = head_lr * cfg["training"]["backbone_lr_scale"]
         optimizer = torch.optim.AdamW(
             [
                 {"params": model.backbone_low.parameters(),  "lr": backbone_lr, "initial_lr": backbone_lr},
@@ -109,7 +105,7 @@ def main():
             weight_decay=cfg["training"]["weight_decay"],
         )
 
-        total_iters = cfg["training"]["total_iters"]
+        total_iters  = cfg["training"]["total_iters"]
         log_interval = cfg["training"]["log_interval"]
         eval_interval = cfg["training"]["eval_interval"]
 
@@ -119,7 +115,7 @@ def main():
 
         # --- 최고 성능 체크포인트 추적 ---
         best_val_top1 = 0.0
-        ckpt_path = "/content/drive/MyDrive/checkpoints/best_checkpoint.pth"
+        ckpt_path = "/content/drive/MyDrive/checkpoints/best_checkpoint_efficientnet.pth"
 
         # --- 체크포인트 이어받기 ---
         import os
@@ -173,10 +169,10 @@ def main():
                 current_lr = optimizer.param_groups[0]["lr"]
                 run.log(
                     {
-                        "step":           iter_count,
-                        "train/loss":     loss_meter.avg,
-                        "train/acc": acc_meter.avg,
-                        "lr":             current_lr,
+                        "step":       iter_count,
+                        "train/loss": loss_meter.avg,
+                        "train/acc":  acc_meter.avg,
+                        "lr":         current_lr,
                     },
                 )
                 print(
@@ -192,9 +188,9 @@ def main():
                 val_metrics = evaluate(model, val_loader, criterion, device, cfg["model"]["num_classes"])
                 run.log(
                     {
-                        "step":         iter_count,
-                        "val/loss":     val_metrics["loss"],
-                        "val/acc": val_metrics["acc"],
+                        "step":          iter_count,
+                        "val/loss":      val_metrics["loss"],
+                        "val/acc":       val_metrics["acc"],
                         "val/top1_mIoU": val_metrics["top1/mIoU"],
                     },
                 )
