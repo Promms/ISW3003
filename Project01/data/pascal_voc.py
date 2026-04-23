@@ -30,17 +30,25 @@ IMAGENET_STD  = (0.229, 0.224, 0.225)
 
 _color_jitter = T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1)
 
-# RandomErasing: tensor 단계에서 적용 (normalize된 후의 0근처 값으로 사각형 영역을 덮어 occlusion 모방)
-# - p=0.5: 절반 확률로 적용
+# RandomErasing 파라미터 상수 (get_params 호출 시 직접 사용)
 # - scale=(0.02, 0.2): 지워지는 영역 면적이 전체의 2~20%
 # - ratio=(0.3, 3.3): 사각형 가로/세로 비
-# - value=0: 0 = normalize 후 평균값 근처(대략 회색) → 너무 튀지 않음
-# - mask는 건드리지 않음 (광도 augmentation에 해당). 가려진 영역도 정답 라벨은 유지되어
-#   "이 부분이 안 보여도 옆 맥락으로 추론" 능력을 학습시킴.
-_random_erasing = T.RandomErasing(p=0.5, scale=(0.02, 0.2), ratio=(0.3, 3.3), value=0.0)
+# - value=0.0: normalize 후 평균값 근처(대략 회색) → 너무 튀지 않음
+# B 방식: image와 mask를 동시에 지워 불가능한 학습 신호를 제거함
+#   - 큰 객체: 일부만 IGNORE → 나머지로 학습 가능
+#   - 작은 객체: 전체가 IGNORE → penalty 없음 (올바른 처리)
+_ERASING_SCALE = (0.02, 0.2)
+_ERASING_RATIO = (0.3, 3.3)
 
 
-def train_augment(image, mask, crop_size):
+def train_augment(image, mask, crop_size, apply_blur=True):
+    """
+    기하/광도 augmentation.
+
+    apply_blur: Copy-Paste의 src 이미지에는 False로 호출.
+      논문(Simple Copy-Paste)에서 붙여넣는 객체에 블러를 적용하면
+      성능 향상이 없음을 확인하고 의도적으로 배제함.
+    """
     # 무작위 좌우 반전 (p=0.5)
     if random.random() > 0.5:
         image = TF.hflip(image)
@@ -51,7 +59,9 @@ def train_augment(image, mask, crop_size):
     image = TF.rotate(image, angle, interpolation=TF.InterpolationMode.BILINEAR, fill=0)
     mask  = TF.rotate(mask, angle, interpolation=TF.InterpolationMode.NEAREST, fill=IGNORE_INDEX)
 
-    # 무작위 스케일링 0.5 ~ 2.0 (multi-scale training)
+    # 무작위 스케일링 0.5 ~ 2.0 (Large Scale Jittering, LSJ)
+    # Copy-Paste 논문에서 성능 향상의 핵심 요소로 꼽음
+    # src/dst 각각 독립적으로 적용 → 다양한 크기의 객체 조합 학습
     scale = random.uniform(0.5, 2.0)
     new_h = int(image.height * scale)
     new_w = int(image.width * scale)
@@ -72,10 +82,11 @@ def train_augment(image, mask, crop_size):
 
     # --- 광도 (photometric) augmentation: image에만 적용, mask 손대지 않음 ---
 
-    # Gaussian Blur (p=0.5)
-    # - kernel_size=5, sigma는 0.1~2.0 사이 랜덤 → 약한 흐림부터 꽤 뿌연 정도까지 다양
-    # - 카메라 초점/움직임으로 인한 blur를 모방. 모델이 선명한 경계에만 의존하지 않게 만듦
-    if random.random() < 0.5:
+    # Gaussian Blur (p=0.5) — dst 이미지에만 적용 (apply_blur=True일 때)
+    # - kernel_size=5, sigma는 0.1~2.0 사이 랜덤
+    # - src 이미지(apply_blur=False): Copy-Paste 논문에서 붙여넣는 객체에 blur 적용 시
+    #   성능 향상 없음 확인 → src 호출 시에는 생략
+    if apply_blur and random.random() < 0.5:
         sigma = random.uniform(0.1, 2.0)
         image = TF.gaussian_blur(image, kernel_size=5, sigma=sigma)
 
@@ -158,7 +169,8 @@ class VOCSegDataset(VOCSegmentation):
             image, mask = train_augment(image, mask, self.crop_size)
 
             # 2) Copy-Paste: 다른 인덱스에서 한 장 더 뽑아 전경을 합성
-            #    - 두 번째 샘플에도 동일하게 train_augment 적용 → 같은 (crop_size, crop_size)
+            #    - src 이미지에도 LSJ + flip 적용 (논문 방식: 각 이미지 독립적으로 aug)
+            #    - apply_blur=False: 붙여넣는 객체에 blur 미적용 (논문 명시)
             #    - 그 후 copy_paste()로 전경만 dst에 덮어씌움
             if random.random() < self.copy_paste_prob:
                 # 자기 자신을 src로 뽑으면 의미 없으므로 다른 idx를 뽑음
@@ -166,7 +178,7 @@ class VOCSegDataset(VOCSegmentation):
                 if src_idx == idx:
                     src_idx = (src_idx + 1) % len(self)
                 image_src, mask_src = super().__getitem__(src_idx)
-                image_src, mask_src = train_augment(image_src, mask_src, self.crop_size)
+                image_src, mask_src = train_augment(image_src, mask_src, self.crop_size, apply_blur=False)
                 image, mask = copy_paste(image, mask, image_src, mask_src)
 
         else:
@@ -175,14 +187,20 @@ class VOCSegDataset(VOCSegmentation):
         # 텐서 변환
         image = TF.to_tensor(image)                      # (3, H, W), float [0, 1]
         image = self.normalize(image)                    # ImageNet 평균/표준편차 정규화
-
-        # 3) RandomErasing: normalize된 텐서에 적용 (image만, mask는 건드리지 않음)
-        #    - 사각형 영역을 0으로 덮어 occlusion 시뮬레이션
-        #    - 정답 라벨은 그대로 유지되어 모델이 주변 컨텍스트로 추론하도록 유도
-        if self.augment and random.random() < self.random_erasing_prob:
-            image = _random_erasing(image)
-
         mask  = torch.from_numpy(np.array(mask)).long()  # (H, W), int64
+
+        # 3) RandomErasing B 방식: image + mask 동시 erase
+        #    - image: 사각형 영역을 0(normalize 기준 회색)으로 덮어 occlusion 시뮬레이션
+        #    - mask:  동일 영역을 IGNORE_INDEX(255)로 설정 → loss 계산에서 제외
+        #    효과:
+        #      - 큰 객체: 일부만 IGNORE → 나머지 픽셀로 정상 학습
+        #      - 작은 객체: 전체가 IGNORE → 불가능한 신호 없음
+        if self.augment and random.random() < self.random_erasing_prob:
+            i, j, h, w, v = T.RandomErasing.get_params(
+                image, scale=_ERASING_SCALE, ratio=_ERASING_RATIO, value=[0.0]
+            )
+            image[:, i:i+h, j:j+w] = v       # image 영역 지우기
+            mask[i:i+h, j:j+w] = IGNORE_INDEX  # mask 동일 영역 ignore 처리
 
         return image, mask
 
