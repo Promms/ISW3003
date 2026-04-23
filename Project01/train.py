@@ -38,7 +38,6 @@ def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.devic
         acc_meter.update(accuracy(logits, labels), n)
         mIoU_meter.update(mIoU(logits, labels, num_classes), n)
 
-
     model.train()
     return {"loss": loss_meter.avg, "acc": acc_meter.avg, "top1/mIoU": mIoU_meter.avg}
 
@@ -118,11 +117,16 @@ def main():
         acc_meter  = AverageMeter()
 
         # --- 최고 성능 체크포인트 추적 ---
+        # run_name별로 파일을 분리 저장해서 실험 비교가 용이하도록 함
+        import os
         best_val_top1 = 0.0
-        ckpt_path = "/content/drive/MyDrive/checkpoints/best_checkpoint.pth"
+        ckpt_dir = cfg["checkpoint"]["dir"]
+        ckpt_name = f"best_{cfg['wandb']['run_name']}.pth"
+        ckpt_path = os.path.join(ckpt_dir, ckpt_name)
+        os.makedirs(ckpt_dir, exist_ok=True)
+        print(f"체크포인트 경로: {ckpt_path}")
 
         # --- 체크포인트 이어받기 ---
-        import os
         iter_count = 0
         if cfg["training"]["resume"] and os.path.exists(ckpt_path):
             ckpt = torch.load(ckpt_path, map_location=device)
@@ -170,8 +174,12 @@ def main():
             iter_count += 1
 
             if iter_count % log_interval == 0:
-                # param_groups: [0]=backbone_low, [1]=backbone_high, [2]=aspp, [3]=decoder
-                lr_backbone = optimizer.param_groups[0]["lr"]
+                # param_groups: [0,1]=backbone(low/high, 같은 lr)  [2,3]=head(aspp/decoder, 같은 lr)
+                # 실제로 서로 다른 lr은 backbone, head 2개뿐이라 2개만 로깅
+                # freeze 중엔 backbone이 학습 안 되므로 "effective LR = 0"으로 기록
+                # (param_groups[i]["lr"]은 decay된 값이라 nonzero로 보여 헷갈림)
+                is_frozen = (freeze_iters > 0 and iter_count <= freeze_iters)
+                lr_backbone = 0.0 if is_frozen else optimizer.param_groups[0]["lr"]
                 lr_head     = optimizer.param_groups[2]["lr"]
                 run.log(
                     {
@@ -186,7 +194,8 @@ def main():
                     f"Iter {iter_count:6d}/{total_iters} | "
                     f"Loss: {loss_meter.avg:.4f} | "
                     f"Accuracy: {acc_meter.avg:.2f}% | "
-                    f"LR(head): {lr_head:.2e} | LR(backbone): {lr_backbone:.2e}"
+                    f"LR(bb): {lr_backbone:.2e} | LR(head): {lr_head:.2e}"
+                    + ("  [frozen]" if is_frozen else "")
                 )
                 loss_meter.reset()
                 acc_meter.reset()

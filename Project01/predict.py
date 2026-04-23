@@ -59,26 +59,98 @@ def preprocess(image: Image.Image, infer_size: tuple[int, int]) -> torch.Tensor:
 
 
 @torch.no_grad()
+def tta_forward(
+    model: nn.Module,
+    x: torch.Tensor,
+    scales: tuple[float, ...],
+    use_flip: bool,
+) -> torch.Tensor:
+    """
+    Test-Time Augmentation forward.
+
+    같은 입력을 여러 스케일 + 좌우 반전으로 변형해 forward → softmax 확률 평균 반환.
+
+    동작:
+      1) 각 scale마다 입력을 bilinear로 resize → forward → 원본 (H, W)로 resize back
+      2) use_flip=True면 좌우 반전 버전도 forward → 출력도 다시 반전해 좌표계 복원
+      3) 모든 버전의 softmax 확률을 단순 평균
+
+    인자:
+      x: (1, 3, H, W) 정규화된 입력 텐서 (infer_size로 이미 resize된 상태)
+      scales: 입력에 곱할 스케일 (1.0 포함 권장)
+      use_flip: True면 좌우 반전 버전도 평균에 포함
+
+    반환:
+      (1, C, H, W) 평균 softmax 확률. argmax 하면 최종 예측.
+
+    비용: forward 횟수 = len(scales) × (2 if use_flip else 1)
+    """
+    _, _, H, W = x.shape
+    prob_sum = None
+    n_aug = 0
+
+    for scale in scales:
+        # 1) scale 적용
+        if scale != 1.0:
+            new_h = int(round(H * scale))
+            new_w = int(round(W * scale))
+            x_s = F.interpolate(x, size=(new_h, new_w), mode="bilinear", align_corners=False)
+        else:
+            x_s = x
+
+        # 2) forward → 원본 (H, W)로 resize back 후 softmax
+        logits = model(x_s)
+        logits = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
+        probs = F.softmax(logits, dim=1)
+
+        if prob_sum is None:
+            prob_sum = torch.zeros_like(probs)
+        prob_sum += probs
+        n_aug += 1
+
+        # 3) flip 버전
+        if use_flip:
+            x_flip = torch.flip(x_s, dims=[3])           # W축 반전
+            logits_flip = model(x_flip)
+            logits_flip = F.interpolate(logits_flip, size=(H, W), mode="bilinear", align_corners=False)
+            logits_flip = torch.flip(logits_flip, dims=[3])   # 출력도 반전해 좌표계 복원
+            prob_sum += F.softmax(logits_flip, dim=1)
+            n_aug += 1
+
+    return prob_sum / n_aug
+
+
+@torch.no_grad()
 def predict_one(
     model: nn.Module,
     image: Image.Image,
     device: torch.device,
     infer_size: tuple[int, int],
+    tta: bool = False,
+    tta_scales: tuple[float, ...] = (0.75, 1.0, 1.25),
+    tta_flip: bool = True,
 ) -> np.ndarray:
     """
     단일 이미지 → (H, W) uint8 numpy array (class index 0~20).
     원본 크기로 복원해서 반환.
+
+    tta=True면 multi-scale + flip softmax 평균으로 예측. 학습 단계에서는 쓰지 않고
+    추론 단계에서만 mIoU를 끌어올리는 용도.
     """
     orig_w, orig_h = image.size  # PIL은 (W, H)
 
-    # 1) inference 해상도로 resize → 모델 forward
+    # 1) inference 해상도로 resize → 모델 forward (TTA on/off)
     x = preprocess(image, infer_size).to(device)
-    logits = model(x)  # (1, C, H_infer, W_infer)
+    if tta:
+        # TTA는 softmax 확률을 반환 — logits처럼 사용해도 argmax는 동일
+        out = tta_forward(model, x, scales=tta_scales, use_flip=tta_flip)
+    else:
+        out = model(x)  # (1, C, H_infer, W_infer) logits
 
-    # 2) 원본 크기로 logits를 복원 (bilinear) 후 argmax
-    #    argmax 후 NEAREST로 올리면 경계가 계단처럼 됨 → logits를 먼저 올리는 게 더 좋음
-    logits = F.interpolate(logits, size=(orig_h, orig_w), mode="bilinear", align_corners=False)
-    pred = logits.argmax(dim=1).squeeze(0).cpu().numpy().astype(np.uint8)
+    # 2) 원본 크기로 복원 후 argmax
+    #    argmax 후 NEAREST로 올리면 경계가 계단처럼 됨 → logits/probs를 먼저 올리는 게 더 좋음
+    out = F.interpolate(out, size=(orig_h, orig_w), mode="bilinear", align_corners=False)
+    pred = out.argmax(dim=1).squeeze(0).cpu().numpy().astype(np.uint8)
 
     return pred
 
@@ -113,6 +185,14 @@ def main():
     parser.add_argument("--rename_by_index", action="store_true",
                         help="정렬 순서대로 000.png ~ 999.png 로 강제 저장 "
                              "(테스트 이미지 파일명이 000~999 형식이 아닐 때)")
+    # --- TTA 옵션 ---
+    parser.add_argument("--tta", action="store_true",
+                        help="Test-Time Augmentation 사용 (multi-scale + flip 앙상블)")
+    parser.add_argument("--tta_scales", type=float, nargs="+",
+                        default=[0.75, 1.0, 1.25],
+                        help="TTA 스케일 목록 (1.0 포함 권장)")
+    parser.add_argument("--no_tta_flip", action="store_true",
+                        help="TTA에서 좌우 반전을 사용하지 않음 (기본: 사용)")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -143,10 +223,18 @@ def main():
 
     print(f"총 {len(img_paths)}장 inference 시작 (입력 크기: {infer_size})")
 
+    if args.tta:
+        print(f"TTA 활성화 — scales={args.tta_scales}, flip={not args.no_tta_flip}")
+
     max_val = 0
     for i, img_path in enumerate(img_paths):
         image = Image.open(img_path).convert("RGB")
-        pred = predict_one(model, image, device, infer_size)
+        pred = predict_one(
+            model, image, device, infer_size,
+            tta=args.tta,
+            tta_scales=tuple(args.tta_scales),
+            tta_flip=not args.no_tta_flip,
+        )
 
         # 픽셀값 범위 검증용
         cur_max = int(pred.max())

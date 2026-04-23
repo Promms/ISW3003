@@ -19,12 +19,17 @@ training:
   weight_decay: 1.0e-4
   resume: false             # true: 체크포인트 이어받기 / false: 처음부터 학습
   freeze_iters: 3000        # N iter까지 backbone freeze (0이면 비활성화)
-  backbone_lr_scale: 0.1   # backbone lr = learning_rate × backbone_lr_scale (head보다 작게)
+  backbone_lr_scale: 0.1    # backbone lr = learning_rate × backbone_lr_scale (head보다 작게)
+
+checkpoint:
+  dir: "/content/drive/MyDrive/checkpoints"   # 체크포인트 저장 폴더
+  # 파일명은 자동으로 "best_{run_name}.pth" — run_name 바꾸면 다른 파일로 저장됨
+  # (예: run_name="aug_strong" → best_aug_strong.pth)
 
 wandb:
   team: "tmdgk115-sungkyunkwan-university"
   project: "osai-project01"
-  run_name: "test1"
+  run_name: "MobileNet_V2"
 
 device: "cuda"
 seed: 42

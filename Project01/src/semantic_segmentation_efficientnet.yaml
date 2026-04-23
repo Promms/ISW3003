@@ -21,10 +21,14 @@ training:
   freeze_iters: 3000        # N iter까지 backbone freeze (0이면 비활성화)
   backbone_lr_scale: 0.1   # backbone lr = learning_rate × backbone_lr_scale
 
+checkpoint:
+  dir: "/content/drive/MyDrive/checkpoints"   # 체크포인트 저장 폴더
+  # 파일명은 자동으로 "best_{run_name}.pth" — run_name 바꾸면 다른 파일로 저장됨
+
 wandb:
   team: "tmdgk115-sungkyunkwan-university"
   project: "osai-project01"
-  run_name: "efficientnet-b0"
+  run_name: "EfficientNet_V2"
 
 device: "cuda"
 seed: 42
