@@ -11,7 +11,7 @@ data:
   pin_memory: true
 
 training:
-  batch_size: 16
+  batch_size: 24
   total_iters: 30000        # iteration 기반 학습
   log_interval: 100         # N iter마다 train 지표 wandb 기록
   eval_interval: 1000       # N iter마다 검증 실행
@@ -20,6 +20,7 @@ training:
   resume: false             # true: 체크포인트 이어받기 / false: 처음부터 학습
   freeze_iters: 3000        # N iter까지 backbone freeze (0이면 비활성화)
   backbone_lr_scale: 0.1    # backbone lr = learning_rate × backbone_lr_scale (head보다 작게)
+  amp: true                 # Mixed Precision (FP16 autocast + GradScaler). T4/A100에서 속도 ~2배
 
 checkpoint:
   dir: "/content/drive/MyDrive/checkpoints"   # 체크포인트 저장 폴더

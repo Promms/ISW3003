@@ -112,6 +112,16 @@ def main():
         log_interval = cfg["training"]["log_interval"]
         eval_interval = cfg["training"]["eval_interval"]
 
+        # --- Mixed Precision ---
+        # amp=True: autocast()로 forward/loss 계산을 FP16으로 실행 → 메모리/속도 이득
+        # GradScaler: FP16 backward의 작은 gradient가 0으로 underflow 되는 것을 방지
+        #             (loss를 큰 상수로 scale해서 backward → optimizer step 전에 unscale)
+        # CUDA가 아니거나 amp=False면 scaler.enabled=False로 자동 비활성화됨 → 일반 FP32 학습과 동일
+        use_amp = cfg["training"].get("amp", False) and device.type == "cuda"
+        scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+        if use_amp:
+            print("Mixed Precision (FP16 autocast) 활성화")
+
         # --- 구간 평균 미터 (log_interval마다 초기화) ---
         loss_meter = AverageMeter()
         acc_meter  = AverageMeter()
@@ -134,6 +144,9 @@ def main():
             optimizer.load_state_dict(ckpt["optimizer_state_dict"])
             iter_count = ckpt["iter"]
             best_val_top1 = ckpt.get("best_val_top1", 0.0)
+            # AMP scaler 상태도 복구 (있으면)
+            if "scaler_state_dict" in ckpt and use_amp:
+                scaler.load_state_dict(ckpt["scaler_state_dict"])
             print(f"체크포인트 불러옴: iter {iter_count}, best mIoU {best_val_top1:.4f}")
         else:
             print("처음부터 학습 시작")
@@ -157,10 +170,16 @@ def main():
             images, labels = images.to(device), labels.to(device)
 
             optimizer.zero_grad()
-            logits = model(images)
-            loss = criterion(logits, labels)
-            loss.backward()
-            optimizer.step()
+            # autocast 내부는 자동으로 FP16로 실행 (BN/Softmax 등 민감한 연산은 자동 FP32 유지)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                logits = model(images)
+                loss = criterion(logits, labels)
+
+            # GradScaler: loss를 scale → backward → unscale → optimizer step
+            # use_amp=False면 scaler가 identity처럼 동작해서 일반 학습과 동일
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             # Poly LR: 각 그룹의 initial_lr 기준으로 감소 (backbone/head 비율 유지)
             decay = (1 - iter_count / total_iters) ** 0.9
@@ -218,6 +237,7 @@ def main():
                             "iter": iter_count,
                             "model_state_dict": model.state_dict(),
                             "optimizer_state_dict": optimizer.state_dict(),
+                            "scaler_state_dict": scaler.state_dict(),  # AMP 이어받기용
                             "best_val_top1": best_val_top1,
                             "config": cfg,
                         },
