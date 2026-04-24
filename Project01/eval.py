@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from data.pascal_voc import get_loader
+from utils.model_factory import build_model
 
 
 IGNORE_INDEX = 255
@@ -16,18 +17,6 @@ VOC_CLASSES = [
     "person", "pottedplant", "sheep", "sofa", "train",
     "tvmonitor",
 ]
-
-
-def build_model(backbone: str, num_classes: int) -> nn.Module:
-    """백본 이름에 따라 모델 생성."""
-    if backbone == "mobilenet":
-        from models.deeplabv3plus_mobilenet import deeplab_v3
-        return deeplab_v3(num_classes=num_classes)
-    elif backbone == "efficientnet":
-        from models.deeplabv3plus_efficientnet import deeplab_v3_efficientnet
-        return deeplab_v3_efficientnet(num_classes=num_classes)
-    else:
-        raise ValueError(f"Unknown backbone: {backbone}")
 
 
 @torch.no_grad()
@@ -92,6 +81,8 @@ def main():
     parser.add_argument("--backbone", type=str, default="mobilenet",
                         choices=["mobilenet", "efficientnet"])
     parser.add_argument("--split", type=str, default="val", choices=["val", "train"])
+    parser.add_argument("--use_ema", action="store_true",
+                        help="체크포인트에 ema_state_dict가 있으면 EMA 가중치로 평가")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -114,7 +105,18 @@ def main():
     # 모델 + 체크포인트
     model = build_model(args.backbone, num_classes).to(device)
     ckpt = torch.load(args.ckpt, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"])
+
+    # EMA 가중치 사용 여부 결정
+    if args.use_ema:
+        if "ema_state_dict" in ckpt:
+            model.load_state_dict(ckpt["ema_state_dict"])
+            print("EMA 가중치로 평가 (ema_state_dict)")
+        else:
+            print("⚠️  --use_ema 지정했으나 ckpt에 ema_state_dict 없음. 일반 가중치로 fallback")
+            model.load_state_dict(ckpt["model_state_dict"])
+    else:
+        model.load_state_dict(ckpt["model_state_dict"])
+
     print(f"체크포인트 로드 완료: iter {ckpt.get('iter', '?')}, "
           f"best_val_top1 {ckpt.get('best_val_top1', 0.0):.4f}")
 

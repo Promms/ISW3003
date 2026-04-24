@@ -1,29 +1,56 @@
-import yaml
+"""
+통합 학습 스크립트.
+
+백본 선택:
+    yaml의 model.backbone = "mobilenet" | "efficientnet"
+
+사용법:
+    python train.py --config src/semantic_segmentation.yaml
+    python train.py --config src/semantic_segmentation_efficientnet.yaml
+
+핵심 기능:
+    - Differential LR (backbone < head) + Poly LR decay
+    - Backbone freeze → unfreeze 2-stage
+    - Mixed Precision (AMP)
+    - torch.compile (1.3~1.5× 가속)
+    - EMA (Exponential Moving Average) shadow model
+    - WandB 로깅 + best ckpt 자동 저장
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+
 import torch
 import torch.nn as nn
 import wandb
+import yaml
 
-from models.deeplabv3plus_mobilenet import deeplab_v3
 from data.pascal_voc import get_loader
-from utils.metrics import accuracy, mIoU, AverageMeter
+from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.diceloss import CEDiceLoss
+from utils.ema import ModelEMA
+from utils.metrics import AverageMeter, accuracy, mIoU
+from utils.model_factory import build_model
+from utils.optim import build_optimizer, poly_lr_step, set_backbone_requires_grad
 
 
-def load_config(path: str = "src/semantic_segmentation.yaml") -> dict:
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="src/semantic_segmentation.yaml",
+                        help="YAML 설정 파일 경로")
+    return parser.parse_args()
+
+
+def load_config(path: str) -> dict:
     with open(path) as f:
         return yaml.safe_load(f)
 
 
-def set_backbone_requires_grad(model: nn.Module, requires_grad: bool) -> None:
-    # Backbone (MobileNetV2) 파라미터의 requires_grad를 일괄 변경
-    for param in model.backbone_low.parameters():
-        param.requires_grad = requires_grad
-    for param in model.backbone_high.parameters():
-        param.requires_grad = requires_grad
-
-
 @torch.no_grad()
-def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.device, num_classes: int) -> dict[str, float]:
+def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.device,
+             num_classes: int) -> dict[str, float]:
     model.eval()
     loss_meter = AverageMeter()
     acc_meter = AverageMeter()
@@ -41,9 +68,10 @@ def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.devic
     model.train()
     return {"loss": loss_meter.avg, "acc": acc_meter.avg, "top1/mIoU": mIoU_meter.avg}
 
-def main():
 
-    cfg = load_config()
+def main() -> None:
+    args = parse_args()
+    cfg = load_config(args.config)
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
     torch.manual_seed(cfg["seed"])
 
@@ -56,7 +84,7 @@ def main():
     run.define_metric("*", step_metric="step")
 
     try:
-        # 학습 데이터
+        # --- 데이터 ---
         train_loader = get_loader(
             root=cfg["data"]["root"],
             years=cfg["data"]["years"],
@@ -66,100 +94,95 @@ def main():
             num_workers=cfg["data"]["num_workers"],
             pin_memory=cfg["data"]["pin_memory"],
             download=cfg["data"]["download"],
+            preload=cfg["data"].get("preload", True),
         )
-
-        # 검증 데이터
+        # val: preload=False + num_workers=0 (train preload 캐시 COW 복사 폭탄 방지)
         val_loader = get_loader(
             root=cfg["data"]["root"],
             years=cfg["data"]["years"],
             image_set="val",
             crop_size=cfg["data"]["crop_size"],
             batch_size=cfg["training"]["batch_size"],
-            num_workers=cfg["data"]["num_workers"],
+            num_workers=0,
             pin_memory=cfg["data"]["pin_memory"],
+            preload=False,
         )
 
-        # 모델
-        model = deeplab_v3(num_classes=cfg["model"]["num_classes"]).to(device)
+        # --- 모델 (백본 선택은 yaml.model.backbone) ---
+        backbone = cfg["model"]["backbone"]
+        num_classes = cfg["model"]["num_classes"]
+        model = build_model(backbone, num_classes).to(device)
+        print(f"Backbone: {backbone}")
 
-        # --- 파라미터 수를 run summary에 한 번만 기록 (정적 메타데이터) ---
-        # param_stats = log_parameter_counts(model)
-        # run.summary.update({f"params/{k}": v for k, v in param_stats.items()})
-
-        # --- Backbone freeze (Stage 1) ---
+        # --- Freeze (Stage 1): compile보다 먼저 설정 ---
         freeze_iters = cfg["training"].get("freeze_iters", 0)
         if freeze_iters > 0:
             set_backbone_requires_grad(model, False)
-            print(f"Backbone freeze: 0 ~ {freeze_iters} iter 동안 head만 학습")
+            print(f"Backbone freeze: 0 ~ {freeze_iters} iter")
 
-        # --- 손실함수 및 옵티마이저 ---
-        criterion = CEDiceLoss(num_classes=cfg["model"]["num_classes"], ignore_index=255, dice_weight=1.0)
+        # --- torch.compile ---
+        if cfg["training"].get("compile", True):
+            try:
+                model = torch.compile(model, mode="reduce-overhead")
+                print("torch.compile 적용 (mode=reduce-overhead)")
+            except Exception as e:
+                print(f"torch.compile 실패 — 일반 모델로 진행: {e}")
 
-        # Differential LR: pretrained backbone은 작은 lr, 새로 학습하는 head는 큰 lr
-        head_lr     = cfg["training"]["learning_rate"]          # 1e-3
-        backbone_lr = head_lr * cfg["training"]["backbone_lr_scale"]  # 1e-3 × 0.1 = 1e-4
-        optimizer = torch.optim.AdamW(
-            [
-                {"params": model.backbone_low.parameters(),  "lr": backbone_lr, "initial_lr": backbone_lr},
-                {"params": model.backbone_high.parameters(), "lr": backbone_lr, "initial_lr": backbone_lr},
-                {"params": model.aspp.parameters(),          "lr": head_lr,     "initial_lr": head_lr},
-                {"params": model.decoder.parameters(),       "lr": head_lr,     "initial_lr": head_lr},
-            ],
-            weight_decay=cfg["training"]["weight_decay"],
-        )
+        # --- Loss / Optimizer ---
+        criterion = CEDiceLoss(num_classes=num_classes, ignore_index=255, dice_weight=1.0)
+        optimizer = build_optimizer(model, cfg)
 
-        total_iters = cfg["training"]["total_iters"]
-        log_interval = cfg["training"]["log_interval"]
-        eval_interval = cfg["training"]["eval_interval"]
+        total_iters      = cfg["training"]["total_iters"]
+        log_interval     = cfg["training"]["log_interval"]
+        eval_interval    = cfg["training"]["eval_interval"]
 
-        # --- Mixed Precision ---
-        # amp=True: autocast()로 forward/loss 계산을 FP16으로 실행 → 메모리/속도 이득
-        # GradScaler: FP16 backward의 작은 gradient가 0으로 underflow 되는 것을 방지
-        #             (loss를 큰 상수로 scale해서 backward → optimizer step 전에 unscale)
-        # CUDA가 아니거나 amp=False면 scaler.enabled=False로 자동 비활성화됨 → 일반 FP32 학습과 동일
+        # --- AMP ---
         use_amp = cfg["training"].get("amp", False) and device.type == "cuda"
-        scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+        scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
         if use_amp:
             print("Mixed Precision (FP16 autocast) 활성화")
 
-        # --- 구간 평균 미터 (log_interval마다 초기화) ---
-        loss_meter = AverageMeter()
-        acc_meter  = AverageMeter()
+        # --- EMA ---
+        use_ema = cfg["training"].get("ema", False)
+        ema_decay = cfg["training"].get("ema_decay", 0.9998)
+        ema_eval_interval = cfg["training"].get("ema_eval_interval", 10000)
+        ema = None
+        if use_ema:
+            ema = ModelEMA(model, decay=ema_decay)
+            print(f"EMA 활성화 (decay={ema_decay}, eval every {ema_eval_interval} iter)")
 
-        # --- 최고 성능 체크포인트 추적 ---
-        # run_name별로 파일을 분리 저장해서 실험 비교가 용이하도록 함
-        import os
-        best_val_top1 = 0.0
+        # --- 체크포인트 경로 ---
         ckpt_dir = cfg["checkpoint"]["dir"]
         ckpt_name = f"best_{cfg['wandb']['run_name']}.pth"
         ckpt_path = os.path.join(ckpt_dir, ckpt_name)
         os.makedirs(ckpt_dir, exist_ok=True)
         print(f"체크포인트 경로: {ckpt_path}")
 
-        # --- 체크포인트 이어받기 ---
+        # --- Resume ---
         iter_count = 0
+        best_val_top1 = 0.0
         if cfg["training"]["resume"] and os.path.exists(ckpt_path):
-            ckpt = torch.load(ckpt_path, map_location=device)
-            model.load_state_dict(ckpt["model_state_dict"])
-            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-            iter_count = ckpt["iter"]
-            best_val_top1 = ckpt.get("best_val_top1", 0.0)
-            # AMP scaler 상태도 복구 (있으면)
-            if "scaler_state_dict" in ckpt and use_amp:
-                scaler.load_state_dict(ckpt["scaler_state_dict"])
-            print(f"체크포인트 불러옴: iter {iter_count}, best mIoU {best_val_top1:.4f}")
+            meta = load_checkpoint(ckpt_path, model, optimizer,
+                                   scaler if use_amp else None, ema, device)
+            iter_count = meta["iter"]
+            best_val_top1 = meta["best_val_top1"]
+            print(f"체크포인트 불러옴: iter {iter_count}, best mIoU {best_val_top1:.4f}"
+                  + ("  [EMA 포함]" if meta["has_ema"] else ""))
         else:
             print("처음부터 학습 시작")
 
-        # --- iteration 기반 학습 루프 ---
+        # --- 학습 루프 ---
+        loss_meter = AverageMeter()
+        acc_meter  = AverageMeter()
         data_iter = iter(train_loader)
         model.train()
 
         while iter_count < total_iters:
-            # --- Backbone unfreeze (Stage 2) ---
+            # Unfreeze (Stage 2)
             if freeze_iters > 0 and iter_count == freeze_iters:
-                set_backbone_requires_grad(model, True)
-                print(f"[Iter {iter_count}] Backbone unfreeze: 전체 모델 학습 시작")
+                unfreeze_target = model._orig_mod if hasattr(model, "_orig_mod") else model
+                set_backbone_requires_grad(unfreeze_target, True)
+                print(f"[Iter {iter_count}] Backbone unfreeze")
 
             try:
                 images, labels = next(data_iter)
@@ -170,21 +193,18 @@ def main():
             images, labels = images.to(device), labels.to(device)
 
             optimizer.zero_grad()
-            # autocast 내부는 자동으로 FP16로 실행 (BN/Softmax 등 민감한 연산은 자동 FP32 유지)
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast("cuda", enabled=use_amp):
                 logits = model(images)
                 loss = criterion(logits, labels)
 
-            # GradScaler: loss를 scale → backward → unscale → optimizer step
-            # use_amp=False면 scaler가 identity처럼 동작해서 일반 학습과 동일
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
 
-            # Poly LR: 각 그룹의 initial_lr 기준으로 감소 (backbone/head 비율 유지)
-            decay = (1 - iter_count / total_iters) ** 0.9
-            for pg in optimizer.param_groups:
-                pg["lr"] = pg["initial_lr"] * decay
+            if ema is not None:
+                ema.update(model)
+
+            poly_lr_step(optimizer, iter_count, total_iters)
 
             n = images.size(0)
             loss_meter.update(loss.item(), n)
@@ -192,23 +212,18 @@ def main():
 
             iter_count += 1
 
+            # --- Logging ---
             if iter_count % log_interval == 0:
-                # param_groups: [0,1]=backbone(low/high, 같은 lr)  [2,3]=head(aspp/decoder, 같은 lr)
-                # 실제로 서로 다른 lr은 backbone, head 2개뿐이라 2개만 로깅
-                # freeze 중엔 backbone이 학습 안 되므로 "effective LR = 0"으로 기록
-                # (param_groups[i]["lr"]은 decay된 값이라 nonzero로 보여 헷갈림)
                 is_frozen = (freeze_iters > 0 and iter_count <= freeze_iters)
                 lr_backbone = 0.0 if is_frozen else optimizer.param_groups[0]["lr"]
                 lr_head     = optimizer.param_groups[2]["lr"]
-                run.log(
-                    {
-                        "step":         iter_count,
-                        "train/loss":   loss_meter.avg,
-                        "train/acc":    acc_meter.avg,
-                        "lr/backbone": lr_backbone,
-                        "lr/head":     lr_head,
-                    },
-                )
+                run.log({
+                    "step":        iter_count,
+                    "train/loss":  loss_meter.avg,
+                    "train/acc":   acc_meter.avg,
+                    "lr/backbone": lr_backbone,
+                    "lr/head":     lr_head,
+                })
                 print(
                     f"Iter {iter_count:6d}/{total_iters} | "
                     f"Loss: {loss_meter.avg:.4f} | "
@@ -219,29 +234,36 @@ def main():
                 loss_meter.reset()
                 acc_meter.reset()
 
+            # --- Eval + best ckpt ---
             if iter_count % eval_interval == 0:
-                val_metrics = evaluate(model, val_loader, criterion, device, cfg["model"]["num_classes"])
-                run.log(
-                    {
-                        "step":         iter_count,
-                        "val/loss":     val_metrics["loss"],
-                        "val/acc": val_metrics["acc"],
-                        "val/top1_mIoU": val_metrics["top1/mIoU"],
-                    },
-                )
-                is_best = val_metrics["top1/mIoU"] > best_val_top1
+                val_metrics = evaluate(model, val_loader, criterion, device, num_classes)
+                log_payload = {
+                    "step":          iter_count,
+                    "val/loss":      val_metrics["loss"],
+                    "val/acc":       val_metrics["acc"],
+                    "val/top1_mIoU": val_metrics["top1/mIoU"],
+                }
+
+                # EMA eval (ema_eval_interval 주기만)
+                ema_mIoU = None
+                if ema is not None and iter_count % ema_eval_interval == 0:
+                    ema_metrics = evaluate(ema.ema_model, val_loader, criterion, device, num_classes)
+                    ema_mIoU = ema_metrics["top1/mIoU"]
+                    log_payload["val/ema_loss"] = ema_metrics["loss"]
+                    log_payload["val/ema_top1_mIoU"] = ema_mIoU
+                    print(f"  [EMA Val] Loss: {ema_metrics['loss']:.4f} | mIoU: {ema_mIoU:.4f}")
+
+                run.log(log_payload)
+
+                current_best = max(val_metrics["top1/mIoU"], ema_mIoU) if ema_mIoU is not None \
+                               else val_metrics["top1/mIoU"]
+                is_best = current_best > best_val_top1
                 if is_best:
-                    best_val_top1 = val_metrics["top1/mIoU"]
-                    torch.save(
-                        {
-                            "iter": iter_count,
-                            "model_state_dict": model.state_dict(),
-                            "optimizer_state_dict": optimizer.state_dict(),
-                            "scaler_state_dict": scaler.state_dict(),  # AMP 이어받기용
-                            "best_val_top1": best_val_top1,
-                            "config": cfg,
-                        },
-                        ckpt_path,
+                    best_val_top1 = current_best
+                    save_checkpoint(
+                        ckpt_path, iter_count, model, optimizer,
+                        scaler=scaler, ema=ema,
+                        best_val_top1=best_val_top1, cfg=cfg,
                     )
                 print(
                     f"  [Val] Loss: {val_metrics['loss']:.4f} | "
@@ -250,6 +272,7 @@ def main():
                 )
     finally:
         run.finish()
+
 
 if __name__ == "__main__":
     main()

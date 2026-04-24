@@ -23,6 +23,8 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from PIL import Image
 
+from utils.model_factory import build_model
+
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD  = (0.229, 0.224, 0.225)
@@ -37,17 +39,6 @@ VOC_PALETTE = [
     0, 64, 128,
 ]
 VOC_PALETTE += [0] * (256 * 3 - len(VOC_PALETTE))  # 256색 팔레트로 패딩
-
-
-def build_model(backbone: str, num_classes: int) -> nn.Module:
-    if backbone == "mobilenet":
-        from models.deeplabv3plus_mobilenet import deeplab_v3
-        return deeplab_v3(num_classes=num_classes)
-    elif backbone == "efficientnet":
-        from models.deeplabv3plus_efficientnet import deeplab_v3_efficientnet
-        return deeplab_v3_efficientnet(num_classes=num_classes)
-    else:
-        raise ValueError(f"Unknown backbone: {backbone}")
 
 
 def preprocess(image: Image.Image, infer_size: tuple[int, int]) -> torch.Tensor:
@@ -193,6 +184,9 @@ def main():
                         help="TTA 스케일 목록 (1.0 포함 권장)")
     parser.add_argument("--no_tta_flip", action="store_true",
                         help="TTA에서 좌우 반전을 사용하지 않음 (기본: 사용)")
+    # --- EMA ---
+    parser.add_argument("--use_ema", action="store_true",
+                        help="체크포인트에 ema_state_dict가 있으면 EMA 가중치로 추론")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -201,11 +195,21 @@ def main():
     # 모델 + 체크포인트
     model = build_model(args.backbone, args.num_classes).to(device)
     ckpt = torch.load(args.ckpt, map_location=device)
-    state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
+
+    # EMA 가중치 우선, 없으면 일반 가중치로 fallback
+    if args.use_ema and isinstance(ckpt, dict) and "ema_state_dict" in ckpt:
+        state_dict = ckpt["ema_state_dict"]
+        print("EMA 가중치로 추론 (ema_state_dict)")
+    elif isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+        state_dict = ckpt["model_state_dict"]
+        if args.use_ema:
+            print("⚠️  --use_ema 지정했으나 ckpt에 ema_state_dict 없음. 일반 가중치로 fallback")
+    else:
+        state_dict = ckpt  # raw state_dict 저장된 경우
     model.load_state_dict(state_dict)
     model.eval()
     print(f"체크포인트 로드: {args.ckpt}")
-    if "iter" in ckpt:
+    if isinstance(ckpt, dict) and "iter" in ckpt:
         print(f"  iter={ckpt['iter']}, best_val_top1={ckpt.get('best_val_top1', 0.0):.4f}")
 
     # 입출력 폴더

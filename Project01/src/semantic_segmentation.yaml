@@ -1,4 +1,5 @@
 model:
+  backbone: "mobilenet"    # "mobilenet" | "efficientnet"
   num_classes: 21
 
 data:
@@ -9,18 +10,24 @@ data:
   crop_size: 320
   download: false
   pin_memory: true
+  preload: true              # VOC 전체 RAM 적재 (~2GB). COCO 합류 시 false로 변경
 
 training:
-  batch_size: 24
-  total_iters: 30000        # iteration 기반 학습
+  batch_size: 48
+  total_iters: 50000        # 30k → 50k (긴 학습으로 수렴 안정화)
   log_interval: 100         # N iter마다 train 지표 wandb 기록
-  eval_interval: 1000       # N iter마다 검증 실행
-  learning_rate: 1.0e-3
+  eval_interval: 2000       # 1k → 2k (50k면 25회 eval로 충분, 시간 절약)
+  learning_rate: 1.0e-3     # V3(1.4e-3)에서 val loss 진동 심함 → MobileNet은 lr 민감, 1.0e-3로 낮춤
   weight_decay: 1.0e-4
   resume: false             # true: 체크포인트 이어받기 / false: 처음부터 학습
-  freeze_iters: 3000        # N iter까지 backbone freeze (0이면 비활성화)
-  backbone_lr_scale: 0.1    # backbone lr = learning_rate × backbone_lr_scale (head보다 작게)
+  freeze_iters: 3000        # 5k → 3k (V3에서 head가 freeze feature에 고착되어 unfreeze 후 학습 정체)
+  backbone_lr_scale: 0.3    # 0.1 → 0.3 (MobileNetV2 pretrained은 EfficientNet보다 약해서 더 적극 학습)
   amp: true                 # Mixed Precision (FP16 autocast + GradScaler). T4/A100에서 속도 ~2배
+  compile: true             # torch.compile (1.3~1.5× 가속, 첫 iter 1~3분 컴파일)
+  # --- EMA (Exponential Moving Average of model weights) ---
+  ema: true                 # true: EMA shadow model 유지, ckpt에 저장 → eval/predict에서 --use_ema
+  ema_decay: 0.9998         # EMA decay. 0.999~0.9999 (학습 길수록 높게)
+  ema_eval_interval: 10000  # EMA 모델 eval 간격 (매 eval_interval엔 안 돌려 오버헤드 줄임)
 
 checkpoint:
   dir: "/content/drive/MyDrive/checkpoints"   # 체크포인트 저장 폴더
@@ -30,7 +37,7 @@ checkpoint:
 wandb:
   team: "tmdgk115-sungkyunkwan-university"
   project: "osai-project01"
-  run_name: "MobileNet_V2"
+  run_name: "MobileNet_V4"
 
 device: "cuda"
 seed: 42
