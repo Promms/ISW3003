@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import random
 
+import cv2
 import numpy as np
 import torch
 import torchvision.transforms as T
-import torchvision.transforms.functional as TF
 from PIL import Image
 from torch.utils.data import ConcatDataset, DataLoader
 from torchvision.datasets import VOCSegmentation
@@ -49,7 +49,7 @@ class VOCSegDataset(VOCSegmentation):
     """VOC Segmentation Dataset + RAM preload + Copy-Paste + RandomErasing B."""
 
     def __init__(self, root, year="2012", image_set="train", crop_size=320, augment=False,
-                 download=False, copy_paste_prob=0.3, random_erasing_prob=0.5,
+                 download=False, copy_paste_prob=0.1, random_erasing_prob=0.5,
                  preload=True, draft_size=640):
         super().__init__(root=root, year=year, image_set=image_set, download=download)
         self.crop_size = crop_size
@@ -58,7 +58,9 @@ class VOCSegDataset(VOCSegmentation):
         self.copy_paste_prob = copy_paste_prob if augment else 0.0
         self.random_erasing_prob = random_erasing_prob if augment else 0.0
 
-        # --- RAM preload + PIL draft (대용량 데이터셋에선 preload=False) ---
+        # --- RAM preload (numpy array 로 저장) ---
+        # draft()로 JPEG decode 단계에서 축소 → numpy 변환 후 저장
+        # mask는 원본 index PNG를 np.uint8 로 저장
         self.preload = preload
         self._cache_images = None
         self._cache_masks = None
@@ -67,26 +69,31 @@ class VOCSegDataset(VOCSegmentation):
             self._cache_masks = []
             for i in range(len(self.images)):
                 img = Image.open(self.images[i])
-                img.draft("RGB", (draft_size, draft_size))   # JPEG decode 단계에서 축소
-                img = img.convert("RGB").copy()              # 파일 핸들 닫으려 copy
-                msk = Image.open(self.masks[i]).copy()
+                img.draft("RGB", (draft_size, draft_size))  # JPEG decode 축소
+                img = np.array(img.convert("RGB"))            # (H, W, 3) RGB uint8
+                msk = np.array(Image.open(self.masks[i]))     # (H, W) uint8
                 self._cache_images.append(img)
                 self._cache_masks.append(msk)
             print(f"[VOCSegDataset] {year}/{image_set}: {len(self._cache_images)}장 RAM preload 완료")
 
     def _load(self, idx):
+        """항상 numpy 반환: (image RGB uint8 HxWx3, mask uint8 HxW)."""
         if self._cache_images is not None:
             return self._cache_images[idx], self._cache_masks[idx]
-        return super().__getitem__(idx)
+        # preload=False: cv2로 빠르게 읽기
+        image = cv2.imread(self.images[idx], cv2.IMREAD_COLOR)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # mask는 index PNG라 cv2가 잘못 읽을 수 있어 PIL 유지
+        mask = np.array(Image.open(self.masks[idx]))
+        return image, mask
 
     def __getitem__(self, idx):
-        image, mask = self._load(idx)
+        image, mask = self._load(idx)  # numpy (RGB uint8, uint8)
 
         if self.augment:
-            # 1) 기하 + 광도 aug
             image, mask = train_augment(image, mask, self.crop_size)
 
-            # 2) Copy-Paste (확률적)
+            # Copy-Paste (확률적)
             if random.random() < self.copy_paste_prob:
                 src_idx = random.randrange(len(self))
                 if src_idx == idx:
@@ -97,12 +104,13 @@ class VOCSegDataset(VOCSegmentation):
         else:
             image, mask = val_transform(image, mask)
 
-        # 텐서 변환 + 정규화
-        image = TF.to_tensor(image)
+        # numpy → tensor + 정규화
+        # (H, W, 3) uint8 → (3, H, W) float / 255
+        image = torch.from_numpy(image.transpose(2, 0, 1).copy()).float().div_(255.0)
         image = self.normalize(image)
-        mask  = torch.from_numpy(np.array(mask)).long()
+        mask  = torch.from_numpy(mask).long()
 
-        # 3) RandomErasing B (image + mask 동시 erase)
+        # RandomErasing B
         if self.augment and random.random() < self.random_erasing_prob:
             i, j, h, w, v = T.RandomErasing.get_params(
                 image, scale=ERASING_SCALE, ratio=ERASING_RATIO, value=[0.0]

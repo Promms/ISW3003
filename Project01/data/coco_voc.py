@@ -25,10 +25,10 @@ from __future__ import annotations
 import os
 import random
 
+import cv2
 import numpy as np
 import torch
 import torchvision.transforms as T
-import torchvision.transforms.functional as TF
 from PIL import Image
 from torch.utils.data import ConcatDataset, DataLoader, Dataset
 
@@ -93,7 +93,7 @@ class CocoVOCSegDataset(Dataset):
         crop_size: int = 320,
         augment: bool = False,
         filter_empty: bool = True,
-        copy_paste_prob: float = 0.3,
+        copy_paste_prob: float = 0.1,    # 15→10%: 데이터 bound 완화. 거의 비슷한 aug 다양성 유지
         random_erasing_prob: float = 0.5,
         overlap_policy: str = "smallest_first",  # "smallest_first" | "ignore"
         mask_cache_dir: str | None = None,        # 사전 렌더된 VOC-index PNG 폴더
@@ -189,29 +189,34 @@ class CocoVOCSegDataset(Dataset):
 
         return mask
 
-    def _load(self, idx: int) -> tuple[Image.Image, Image.Image]:
+    def _load(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
+        """numpy 반환: (image RGB uint8 HxWx3, mask uint8 HxW)."""
         img_id = self.ids[idx]
         info = self.coco.loadImgs(img_id)[0]
         path = os.path.join(self.img_root, info["file_name"])
-        image = Image.open(path).convert("RGB")
 
-        # 사전 렌더된 PNG 우선 시도 (2~5ms) → 실패 시 annToMask 재계산 (15~50ms)
+        # cv2.imread 는 PIL 보다 JPEG decode 빠름
+        image = cv2.imread(path, cv2.IMREAD_COLOR)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        # 사전 렌더된 PNG 우선 (2~5ms) → 실패 시 annToMask 폴백 (15~50ms)
         mask = None
         if self.mask_cache_dir is not None:
             cache_path = os.path.join(self.mask_cache_dir, f"{img_id:012d}.png")
             if os.path.exists(cache_path):
-                mask = Image.open(cache_path)
-                mask.load()  # 파일 핸들 닫기 (worker 재사용 시 FD 누수 방지)
+                # cv2.IMREAD_UNCHANGED: palette/gray 유지. 그래도 mode 안 맞는 경우 대비해 PIL 폴백
+                mask = cv2.imread(cache_path, cv2.IMREAD_UNCHANGED)
+                if mask is None:
+                    mask = np.array(Image.open(cache_path))
 
         if mask is None:
-            mask_np = self._build_mask(img_id, info["height"], info["width"])
-            mask = Image.fromarray(mask_np, mode="L")
+            mask = self._build_mask(img_id, info["height"], info["width"])
 
         return image, mask
 
     # ---------- public ----------
     def __getitem__(self, idx: int):
-        image, mask = self._load(idx)
+        image, mask = self._load(idx)  # numpy (RGB uint8, uint8)
 
         if self.augment:
             image, mask = train_augment(image, mask, self.crop_size)
@@ -228,9 +233,10 @@ class CocoVOCSegDataset(Dataset):
         else:
             image, mask = val_transform(image, mask)
 
-        image = TF.to_tensor(image)
+        # numpy → tensor + 정규화
+        image = torch.from_numpy(image.transpose(2, 0, 1).copy()).float().div_(255.0)
         image = self.normalize(image)
-        mask  = torch.from_numpy(np.array(mask)).long()
+        mask  = torch.from_numpy(mask).long()
 
         if self.augment and random.random() < self.random_erasing_prob:
             i, j, h, w, v = T.RandomErasing.get_params(
@@ -289,5 +295,5 @@ def get_combined_loader(
         combined, batch_size=batch_size, shuffle=shuffle,
         num_workers=num_workers, pin_memory=pin_memory,
         drop_last=drop_last, persistent_workers=(num_workers > 0),
-        prefetch_factor=(2 if num_workers > 0 else None),
+        prefetch_factor=(6 if num_workers > 0 else None),
     )

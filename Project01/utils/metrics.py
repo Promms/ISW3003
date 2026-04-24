@@ -5,12 +5,26 @@ IGNORE_INDEX = 255
 
 
 def accuracy(logits: Tensor, targets: Tensor) -> float:
-
+    """평가용: 즉시 Python float 반환 (GPU sync 발생). val 루프에서만 사용."""
     with torch.no_grad():
         pred = logits.argmax(dim=1)
         mask = (targets != IGNORE_INDEX)
         correct = (pred[mask] == targets[mask])
         return correct.float().mean().item() * 100.0
+
+
+@torch.no_grad()
+def accuracy_counts(logits: Tensor, targets: Tensor) -> tuple[Tensor, Tensor]:
+    """
+    학습 루프용: (correct, total) 을 GPU 스칼라 텐서로 반환.
+    .item() 호출이 없어 CUDA 파이프라인을 막지 않음.
+    호출 측에서 누적한 뒤 log_interval 마다만 .item() 하면 sync 1/N 로 감소.
+    """
+    pred = logits.argmax(dim=1)
+    mask = (targets != IGNORE_INDEX)
+    correct = (pred[mask] == targets[mask]).sum()
+    total   = mask.sum()
+    return correct, total
 
 def mIoU(logits: Tensor, targets: Tensor, num_class: int) -> float:
 

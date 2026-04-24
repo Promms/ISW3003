@@ -6,8 +6,8 @@ data:
   root: "/content/data"
   dataset_name: "pascal_voc"
   years: ["2007", "2012"]
-  num_workers: 4           # 2→4: Colab 2 vCPU라도 I/O wait 때문에 늘려도 이득
-  crop_size: 320
+  num_workers: 2           # nproc과 맞춤 (Colab free 2 vCPU). 4 이상은 context switch 손해
+  crop_size: 288           # 320→288: aug/decode CPU 시간 ~20% 감소. 성능 영향 미미
   download: false
   pin_memory: true
   preload: true              # VOC 전체 RAM 적재 (~2GB). COCO 합류해도 VOC만 preload는 유지 OK
@@ -22,7 +22,7 @@ data:
 
 training:
   batch_size: 48
-  val_batch_size: 16         # val은 no_grad지만 DiceLoss one-hot (B,C,H,W) float 이 크므로 낮춤 (OOM 방지)
+  val_batch_size: 24         # val은 no_grad. DiceLoss one-hot 때문에 train batch 보단 낮춤
   total_iters: 100000        # 50k → 100k (COCO 합류로 epoch당 iter ~14배 → 수렴 위해 상향)
   log_interval: 100
   eval_interval: 4000        # 100k / 25회

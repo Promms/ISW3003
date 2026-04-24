@@ -31,7 +31,7 @@ from data.pascal_voc import build_voc_datasets, get_loader
 from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.diceloss import CEDiceLoss
 from utils.ema import ModelEMA
-from utils.metrics import AverageMeter, accuracy, mIoU
+from utils.metrics import AverageMeter, accuracy, accuracy_counts, mIoU
 from utils.model_factory import build_model
 from utils.optim import build_optimizer, poly_lr_step, set_backbone_requires_grad
 
@@ -193,8 +193,11 @@ def main() -> None:
             print("처음부터 학습 시작")
 
         # --- 학습 루프 ---
-        loss_meter = AverageMeter()
-        acc_meter  = AverageMeter()
+        # loss/acc는 매 iter .item() 하지 않고 GPU 텐서로 누적 → log_interval 마다만 sync
+        # (GPU sync 1/log_interval 로 감소해서 CUDA 파이프라인이 막히지 않음)
+        loss_accum  = torch.zeros((), device=device)
+        correct_accum = torch.zeros((), device=device, dtype=torch.long)
+        total_accum = torch.zeros((), device=device, dtype=torch.long)
         data_iter = iter(train_loader)
         model.train()
 
@@ -210,9 +213,11 @@ def main() -> None:
                 data_iter = iter(train_loader)
                 images, labels = next(data_iter)
 
-            images, labels = images.to(device), labels.to(device)
+            # non_blocking: pin_memory 와 함께 H2D 전송을 다음 compute와 오버랩
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=use_amp):
                 logits = model(images)
                 loss = criterion(logits, labels)
@@ -229,33 +234,39 @@ def main() -> None:
                 warmup_iters=cfg["training"].get("warmup_iters", 0),
             )
 
-            n = images.size(0)
-            loss_meter.update(loss.item(), n)
-            acc_meter.update(accuracy(logits, labels), n)
+            # GPU 텐서로만 누적 (sync 없음)
+            loss_accum    += loss.detach()
+            correct, total = accuracy_counts(logits, labels)
+            correct_accum += correct
+            total_accum   += total
 
             iter_count += 1
 
-            # --- Logging ---
+            # --- Logging --- (여기서만 .item() = GPU sync)
             if iter_count % log_interval == 0:
+                avg_loss = (loss_accum / log_interval).item()
+                avg_acc  = (correct_accum.float() / total_accum.clamp(min=1).float() * 100.0).item()
+
                 is_frozen = (freeze_iters > 0 and iter_count <= freeze_iters)
                 lr_backbone = 0.0 if is_frozen else optimizer.param_groups[0]["lr"]
                 lr_head     = optimizer.param_groups[2]["lr"]
                 run.log({
                     "step":        iter_count,
-                    "train/loss":  loss_meter.avg,
-                    "train/acc":   acc_meter.avg,
+                    "train/loss":  avg_loss,
+                    "train/acc":   avg_acc,
                     "lr/backbone": lr_backbone,
                     "lr/head":     lr_head,
                 })
                 print(
                     f"Iter {iter_count:6d}/{total_iters} | "
-                    f"Loss: {loss_meter.avg:.4f} | "
-                    f"Accuracy: {acc_meter.avg:.2f}% | "
+                    f"Loss: {avg_loss:.4f} | "
+                    f"Accuracy: {avg_acc:.2f}% | "
                     f"LR(bb): {lr_backbone:.2e} | LR(head): {lr_head:.2e}"
                     + ("  [frozen]" if is_frozen else "")
                 )
-                loss_meter.reset()
-                acc_meter.reset()
+                loss_accum.zero_()
+                correct_accum.zero_()
+                total_accum.zero_()
 
             # --- Eval + best ckpt ---
             if iter_count % eval_interval == 0:
