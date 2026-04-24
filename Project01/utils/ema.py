@@ -22,7 +22,6 @@ Exponential Moving Average (EMA) of model weights.
         model.load_state_dict(ckpt["model_state_dict"])
 
 주의:
-    - torch.compile 모델엔 `model._orig_mod`로 원본 참조해서 넘겨야 함
     - BN running_mean/var 등 buffer도 함께 평균 (segmentation에 중요)
     - decay는 0.999~0.9999 권장. 학습 길수록 높게
 """
@@ -46,24 +45,19 @@ class ModelEMA:
     def __init__(self, model: nn.Module, decay: float = 0.999) -> None:
         self.decay = decay
         # deep copy해서 같은 device에 올림. requires_grad=False 로 고정 (gradient 안 흐름)
-        self.ema_model = copy.deepcopy(self._unwrap(model)).eval()
+        self.ema_model = copy.deepcopy(model).eval()
         for p in self.ema_model.parameters():
             p.requires_grad_(False)
-
-    @staticmethod
-    def _unwrap(model: nn.Module) -> nn.Module:
-        """torch.compile 래핑을 벗김."""
-        return model._orig_mod if hasattr(model, "_orig_mod") else model
 
     @torch.no_grad()
     def update(self, model: nn.Module) -> None:
         """
-        매 iter 호출. current_model 가중치로 shadow 업데이트.
+        주기적으로 호출. current_model 가중치로 shadow 업데이트.
 
         parameters + buffers 모두 평균 (BN running stats 포함).
         dtype이 float가 아닌 buffer(long 등)는 그대로 복사.
         """
-        src = self._unwrap(model)
+        src = model
         d = self.decay
 
         # 파라미터 평균

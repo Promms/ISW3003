@@ -1,7 +1,7 @@
 """
 체크포인트 저장/복원 유틸.
 
-torch.compile 래핑 자동 해제, AMP/EMA state 선택적 포함.
+AMP/EMA state 선택적 포함.
 """
 
 from __future__ import annotations
@@ -11,11 +11,6 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-
-
-def _unwrap(model: nn.Module) -> nn.Module:
-    """torch.compile된 모델은 _orig_mod로 언랩. 그 외엔 그대로."""
-    return model._orig_mod if hasattr(model, "_orig_mod") else model
 
 
 def save_checkpoint(
@@ -28,16 +23,10 @@ def save_checkpoint(
     best_val_top1: float = 0.0,
     cfg: Optional[dict] = None,
 ) -> None:
-    """
-    best ckpt 저장.
-
-    compile 모델의 경우 원본 state_dict ("_orig_mod." 접두사 없음)로 저장해야
-    eval.py / predict.py에서 깔끔하게 로드됨.
-    """
-    save_model = _unwrap(model)
+    """best ckpt 저장."""
     state = {
         "iter": iter_count,
-        "model_state_dict": save_model.state_dict(),
+        "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "best_val_top1": best_val_top1,
     }
@@ -66,8 +55,7 @@ def load_checkpoint(
     반환: {"iter": ..., "best_val_top1": ...}
     """
     ckpt = torch.load(path, map_location=device)
-    load_target = _unwrap(model)
-    load_target.load_state_dict(ckpt["model_state_dict"])
+    model.load_state_dict(ckpt["model_state_dict"])
 
     if optimizer is not None and "optimizer_state_dict" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])

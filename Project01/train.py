@@ -12,7 +12,6 @@
     - Differential LR (backbone < head) + Poly LR decay
     - Backbone freeze → unfreeze 2-stage
     - Mixed Precision (AMP)
-    - torch.compile (1.3~1.5× 가속)
     - EMA (Exponential Moving Average) shadow model
     - WandB 로깅 + best ckpt 자동 저장
 """
@@ -27,7 +26,8 @@ import torch.nn as nn
 import wandb
 import yaml
 
-from data.pascal_voc import get_loader
+from data.coco_voc import CocoVOCSegDataset, get_combined_loader
+from data.pascal_voc import build_voc_datasets, get_loader
 from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.diceloss import CEDiceLoss
 from utils.ema import ModelEMA
@@ -84,25 +84,53 @@ def main() -> None:
     run.define_metric("*", step_metric="step")
 
     try:
-        # --- 데이터 ---
-        train_loader = get_loader(
+        # --- Train 데이터: VOC + COCO(선택) 합류 ---
+        voc_train = build_voc_datasets(
             root=cfg["data"]["root"],
             years=cfg["data"]["years"],
             image_set="train",
             crop_size=cfg["data"]["crop_size"],
-            batch_size=cfg["training"]["batch_size"],
-            num_workers=cfg["data"]["num_workers"],
-            pin_memory=cfg["data"]["pin_memory"],
+            augment=True,
             download=cfg["data"]["download"],
             preload=cfg["data"].get("preload", True),
         )
-        # val: preload=False + num_workers=0 (train preload 캐시 COW 복사 폭탄 방지)
+        voc_total = sum(len(d) for d in voc_train)
+
+        coco_cfg = cfg["data"].get("coco")
+        coco_train = None
+        if coco_cfg and coco_cfg.get("enabled", True):
+            coco_train = CocoVOCSegDataset(
+                img_root=coco_cfg["img_root"],
+                ann_file=coco_cfg["ann_file"],
+                crop_size=cfg["data"]["crop_size"],
+                augment=True,
+                filter_empty=coco_cfg.get("filter_empty", True),
+                overlap_policy=coco_cfg.get("overlap_policy", "smallest_first"),
+                mask_cache_dir=coco_cfg.get("mask_cache_dir"),
+            )
+            print(f"[data] VOC {voc_total} + COCO {len(coco_train)} "
+                  f"= {voc_total + len(coco_train)} train samples")
+        else:
+            print(f"[data] VOC only: {voc_total} train samples")
+
+        train_loader = get_combined_loader(
+            voc_datasets=voc_train,
+            coco_dataset=coco_train,
+            batch_size=cfg["training"]["batch_size"],
+            num_workers=cfg["data"]["num_workers"],
+            pin_memory=cfg["data"]["pin_memory"],
+            shuffle=True,
+            drop_last=True,
+        )
+
+        # --- Val: VOC val만 사용 (지표 일관성. 최종 평가는 별도 custom set) ---
+        # preload=False + num_workers=0 (train preload 캐시 COW 복사 폭탄 방지)
         val_loader = get_loader(
             root=cfg["data"]["root"],
             years=cfg["data"]["years"],
             image_set="val",
             crop_size=cfg["data"]["crop_size"],
-            batch_size=cfg["training"]["batch_size"],
+            batch_size=cfg["training"].get("val_batch_size", cfg["training"]["batch_size"]),
             num_workers=0,
             pin_memory=cfg["data"]["pin_memory"],
             preload=False,
@@ -114,19 +142,11 @@ def main() -> None:
         model = build_model(backbone, num_classes).to(device)
         print(f"Backbone: {backbone}")
 
-        # --- Freeze (Stage 1): compile보다 먼저 설정 ---
+        # --- Freeze (Stage 1) ---
         freeze_iters = cfg["training"].get("freeze_iters", 0)
         if freeze_iters > 0:
             set_backbone_requires_grad(model, False)
             print(f"Backbone freeze: 0 ~ {freeze_iters} iter")
-
-        # --- torch.compile ---
-        if cfg["training"].get("compile", True):
-            try:
-                model = torch.compile(model, mode="reduce-overhead")
-                print("torch.compile 적용 (mode=reduce-overhead)")
-            except Exception as e:
-                print(f"torch.compile 실패 — 일반 모델로 진행: {e}")
 
         # --- Loss / Optimizer ---
         criterion = CEDiceLoss(num_classes=num_classes, ignore_index=255, dice_weight=1.0)
@@ -146,6 +166,7 @@ def main() -> None:
         use_ema = cfg["training"].get("ema", False)
         ema_decay = cfg["training"].get("ema_decay", 0.9998)
         ema_eval_interval = cfg["training"].get("ema_eval_interval", 10000)
+        ema_update_every = cfg["training"].get("ema_update_every", 1)
         ema = None
         if use_ema:
             ema = ModelEMA(model, decay=ema_decay)
@@ -180,8 +201,7 @@ def main() -> None:
         while iter_count < total_iters:
             # Unfreeze (Stage 2)
             if freeze_iters > 0 and iter_count == freeze_iters:
-                unfreeze_target = model._orig_mod if hasattr(model, "_orig_mod") else model
-                set_backbone_requires_grad(unfreeze_target, True)
+                set_backbone_requires_grad(model, True)
                 print(f"[Iter {iter_count}] Backbone unfreeze")
 
             try:
@@ -201,10 +221,13 @@ def main() -> None:
             scaler.step(optimizer)
             scaler.update()
 
-            if ema is not None:
+            if ema is not None and (iter_count + 1) % ema_update_every == 0:
                 ema.update(model)
 
-            poly_lr_step(optimizer, iter_count, total_iters)
+            poly_lr_step(
+                optimizer, iter_count, total_iters,
+                warmup_iters=cfg["training"].get("warmup_iters", 0),
+            )
 
             n = images.size(0)
             loss_meter.update(loss.item(), n)

@@ -40,22 +40,31 @@ def build_optimizer(model: nn.Module, cfg: dict) -> torch.optim.Optimizer:
 
 
 def poly_lr_step(optimizer: torch.optim.Optimizer, iter_count: int, total_iters: int,
-                 power: float = 0.9) -> None:
+                 power: float = 0.9, warmup_iters: int = 0) -> None:
     """
-    Poly LR: 각 group의 initial_lr 기준으로 (1 - t/T)^power 비율로 감소.
-    backbone/head 비율은 유지됨.
+    Linear warmup → Poly decay 복합 스케줄.
+
+    - iter_count < warmup_iters : lr = initial_lr * (iter_count + 1) / warmup_iters  (선형 증가)
+    - 그 이후                   : lr = initial_lr * (1 - progress)^power
+         progress = (iter_count - warmup_iters) / (total_iters - warmup_iters)
+
+    warmup_iters=0 이면 기존 동작과 동일.
+    각 param group의 initial_lr 비율(backbone/head)은 항상 유지됨.
     """
-    decay = (1 - iter_count / total_iters) ** power
+    if warmup_iters > 0 and iter_count < warmup_iters:
+        scale = (iter_count + 1) / warmup_iters
+    else:
+        denom = max(1, total_iters - warmup_iters)
+        progress = (iter_count - warmup_iters) / denom
+        progress = min(max(progress, 0.0), 1.0)
+        scale = (1 - progress) ** power
+
     for pg in optimizer.param_groups:
-        pg["lr"] = pg["initial_lr"] * decay
+        pg["lr"] = pg["initial_lr"] * scale
 
 
 def set_backbone_requires_grad(model: nn.Module, requires_grad: bool) -> None:
-    """
-    Backbone 파라미터의 requires_grad를 일괄 변경 (freeze/unfreeze용).
-
-    compile된 모델에도 안전하게 동작하도록 호출 측에서 _orig_mod 언랩 후 전달 권장.
-    """
+    """Backbone 파라미터의 requires_grad를 일괄 변경 (freeze/unfreeze용)."""
     for param in model.backbone_low.parameters():
         param.requires_grad = requires_grad
     for param in model.backbone_high.parameters():

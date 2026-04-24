@@ -6,37 +6,48 @@ data:
   root: "/content/data"
   dataset_name: "pascal_voc"
   years: ["2007", "2012"]
-  num_workers: 2
+  num_workers: 4           # 2→4: Colab 2 vCPU라도 I/O wait 때문에 늘려도 이득
   crop_size: 320
   download: false
   pin_memory: true
-  preload: true              # VOC 전체 RAM 적재 (~2GB). COCO 합류 시 false로 변경
+  preload: true              # VOC 전체 RAM 적재 (~2GB). COCO 합류해도 VOC만 preload는 유지 OK
+  coco:                      # COCO 2017 → VOC 21-class 매핑 합류 (enabled=false로 끌 수 있음)
+    enabled: true
+    img_root: "/content/coco/train2017"
+    ann_file: "/content/coco/annotations/instances_train2017.json"
+    filter_empty: true       # VOC 매핑 클래스 없는 이미지 제외 (~118k → ~65k)
+    overlap_policy: "smallest_first"
+    mask_cache_dir: "/content/coco/voc_masks"   # 사전 렌더된 VOC-index PNG 폴더
+                                                # 없으면 annToMask 폴백 (학습 2~3배 느려짐)
 
 training:
   batch_size: 48
-  total_iters: 50000        # iteration 기반 학습 (30k → 50k, 긴 학습으로 수렴 안정화)
-  log_interval: 100         # N iter마다 train 지표 wandb 기록
-  eval_interval: 2000       # N iter마다 검증 실행 (50k면 25회 eval로 충분, 시간 절약)
-  learning_rate: 1.4e-3
-  weight_decay: 1.0e-4      # 50k 학습에서 과적합 억제
-  resume: false             # true: 체크포인트 이어받기 / false: 처음부터 학습
-  freeze_iters: 5000        # 3k → 5k (긴 학습에 맞춰 head 안정화 여유 확보)
-  backbone_lr_scale: 0.1   # backbone lr = learning_rate × backbone_lr_scale
-  amp: true                # Mixed Precision (FP16 autocast + GradScaler). T4/A100에서 속도 ~2배
-  compile: true            # torch.compile 적용 (1.3~1.5× 가속, 첫 iter 1~3분 컴파일 시간)
-  # --- EMA (Exponential Moving Average of model weights) ---
-  ema: true                # true: EMA shadow model 유지, ckpt에 저장 → eval/predict에서 --use_ema
-  ema_decay: 0.9998        # EMA decay. 0.999~0.9999 (학습 길수록 높게)
-  ema_eval_interval: 10000 # EMA 모델 eval 간격 (매 eval_interval엔 안 돌려 오버헤드 줄임)
+  val_batch_size: 16         # val은 no_grad지만 DiceLoss one-hot (B,C,H,W) float 이 크므로 낮춤 (OOM 방지)
+  total_iters: 100000        # 50k → 100k (COCO 합류로 epoch당 iter ~14배 → 수렴 위해 상향)
+  log_interval: 100
+  eval_interval: 4000        # 100k / 25회
+  learning_rate: 1.4e-3      # V3 값 복귀 (COCO 합류하면 pretrained 보존 중요)
+  weight_decay: 1.0e-4
+  resume: false              # true: 기존 best_{run_name}.pth 에서 이어받기 / false: 처음부터
+  freeze_iters: 2000         # V4 1000은 너무 짧음 (head 안정화 부족) → 2000 복귀
+  backbone_lr_scale: 0.15    # COCO 대량 합류 시 pretrained 파괴 방지 목적 (0.25 → 0.15)
+  warmup_iters: 500          # 초반 500 iter 선형 warmup (COCO 분포 다양성에 대응)
+  amp: true
+  ema_update_every: 8       # 매 iter → 8 iter마다 (decay=0.9998^8≈0.9984, 체감 차이 미미)
+  # --- EMA ---
+  ema: true
+  ema_decay: 0.9998
+  ema_eval_interval: 10000
 
 checkpoint:
   dir: "/content/drive/MyDrive/checkpoints"   # 체크포인트 저장 폴더
   # 파일명은 자동으로 "best_{run_name}.pth" — run_name 바꾸면 다른 파일로 저장됨
+  # (예: run_name="EfficientNet_V5" → best_EfficientNet_V5.pth)
 
 wandb:
   team: "tmdgk115-sungkyunkwan-university"
   project: "osai-project01"
-  run_name: "EfficientNet_V3"
+  run_name: "EfficientNet_V5"
 
 device: "cuda"
 seed: 42

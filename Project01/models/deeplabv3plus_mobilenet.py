@@ -7,6 +7,8 @@ from torch import Tensor
 
 import torchvision.models as models
 
+from utils.modules import SEBlock
+
 
 def conv1x1(in_ch: int, out_ch: int) -> nn.Conv2d:
     return nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False)
@@ -77,6 +79,8 @@ class ASPP(nn.Module):
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True)
         )
+        # ASPP 5개 branch를 합친 뒤 채널별 중요도 재보정
+        self.se = SEBlock(out_ch, reduction=16)
 
     def forward(self, x: Tensor) -> Tensor:
         results = [branch(x) for branch in self.branches]
@@ -88,6 +92,7 @@ class ASPP(nn.Module):
 
         combined = torch.cat(results, dim=1)
         out = self.project(combined)
+        out = self.se(out)
         return out
 
 

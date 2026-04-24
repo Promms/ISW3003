@@ -113,6 +113,28 @@ class VOCSegDataset(VOCSegmentation):
         return image, mask
 
 
+def build_voc_datasets(
+    root,
+    years=["2007", "2012"],
+    image_set="train",
+    crop_size=320,
+    augment=None,
+    download=False,
+    preload=True,
+) -> list[VOCSegDataset]:
+    """VOC 연도별 Dataset 리스트로 반환 (ConcatDataset 재료)."""
+    if augment is None:
+        augment = (image_set == "train")
+    return [
+        VOCSegDataset(
+            root=root, year=year, image_set=image_set,
+            crop_size=crop_size, augment=augment,
+            download=download, preload=preload,
+        )
+        for year in years
+    ]
+
+
 def get_loader(
     root,
     years=["2007", "2012"],
@@ -129,14 +151,11 @@ def get_loader(
     preload=False: 디스크 I/O 유지. COCO 합류 등 대용량에서 RAM 보호
     """
     is_train = (image_set == "train")
-    datasets = [
-        VOCSegDataset(
-            root=root, year=year, image_set=image_set,
-            crop_size=crop_size, augment=is_train,
-            download=download, preload=preload,
-        )
-        for year in years
-    ]
+    datasets = build_voc_datasets(
+        root=root, years=years, image_set=image_set,
+        crop_size=crop_size, augment=is_train,
+        download=download, preload=preload,
+    )
     combined = ConcatDataset(datasets)
 
     return DataLoader(
