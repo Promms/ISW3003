@@ -49,7 +49,7 @@ class VOCSegDataset(VOCSegmentation):
     """VOC Segmentation Dataset + RAM preload + Copy-Paste + RandomErasing B."""
 
     def __init__(self, root, year="2012", image_set="train", crop_size=320, augment=False,
-                 download=False, copy_paste_prob=0.1, random_erasing_prob=0.25,
+                 download=False, copy_paste_prob=0.1, random_erasing_prob=0.5,
                  preload=True, draft_size=640):
         super().__init__(root=root, year=year, image_set=image_set, download=download)
         self.crop_size = crop_size

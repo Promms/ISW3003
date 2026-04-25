@@ -1,11 +1,7 @@
 """
-통합 학습 스크립트.
-
-백본 선택:
-    yaml의 model.backbone = "mobilenet" | "efficientnet"
+EfficientNet 전용 학습 스크립트 (V6: CE + Dice + Lovasz softmax).
 
 사용법:
-    python train.py --config src/semantic_segmentation.yaml
     python train.py --config src/semantic_segmentation_efficientnet.yaml
 
 핵심 기능:
@@ -14,6 +10,7 @@
     - Mixed Precision (AMP)
     - EMA (Exponential Moving Average) shadow model
     - WandB 로깅 + best ckpt 자동 저장
+    - Loss: CE + dice + lovasz_softmax (mIoU 직접 최적화)
 """
 
 from __future__ import annotations
@@ -29,7 +26,7 @@ import yaml
 from data.coco_voc import CocoVOCSegDataset, get_combined_loader
 from data.pascal_voc import build_voc_datasets, get_loader
 from utils.checkpoint import load_checkpoint, save_checkpoint
-from utils.diceloss import CEDiceLoss
+from utils.diceloss import CEDiceLovaszLoss
 from utils.ema import ModelEMA
 from utils.metrics import AverageMeter, accuracy, accuracy_counts, mIoU
 from utils.model_factory import build_model
@@ -38,7 +35,7 @@ from utils.optim import build_optimizer, poly_lr_step, set_backbone_requires_gra
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="src/semantic_segmentation.yaml",
+    parser.add_argument("--config", type=str, default="src/semantic_segmentation_efficientnet.yaml",
                         help="YAML 설정 파일 경로")
     return parser.parse_args()
 
@@ -75,11 +72,32 @@ def main() -> None:
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
     torch.manual_seed(cfg["seed"])
 
+    # --- WandB resume: ckpt에서 run_id 미리 뽑아 같은 run에 이어 기록 ---
+    ckpt_dir = cfg["checkpoint"]["dir"]
+    run_name = cfg["wandb"]["run_name"]
+    ckpt_path = os.path.join(ckpt_dir, f"best_{run_name}.pth")
+    last_ckpt_path = os.path.join(ckpt_dir, f"last_{run_name}.pth")
+
+    wandb_run_id = None
+    if cfg["training"]["resume"]:
+        for p in (last_ckpt_path, ckpt_path):
+            if os.path.exists(p):
+                try:
+                    meta = torch.load(p, map_location="cpu", weights_only=False)
+                    wandb_run_id = meta.get("wandb_run_id")
+                except Exception as e:
+                    print(f"[wandb] ckpt에서 run_id 읽기 실패: {e}")
+                if wandb_run_id:
+                    print(f"[wandb] resume run_id={wandb_run_id}")
+                    break
+
     run = wandb.init(
         entity=cfg["wandb"]["team"],
         project=cfg["wandb"]["project"],
         name=cfg["wandb"]["run_name"],
         config=cfg,
+        id=wandb_run_id,
+        resume="allow",
     )
     run.define_metric("*", step_metric="step")
 
@@ -149,7 +167,11 @@ def main() -> None:
             print(f"Backbone freeze: 0 ~ {freeze_iters} iter")
 
         # --- Loss / Optimizer ---
-        criterion = CEDiceLoss(num_classes=num_classes, ignore_index=255, dice_weight=1.0)
+        # CE + Dice (각 1.0) + Lovasz (0.5). Lovasz는 mIoU 직접 최적화하지만 무거워서 가중치 보수적.
+        criterion = CEDiceLovaszLoss(
+            num_classes=num_classes, ignore_index=255,
+            dice_weight=1.0, lovasz_weight=0.5,
+        )
         optimizer = build_optimizer(model, cfg)
 
         total_iters      = cfg["training"]["total_iters"]
@@ -172,11 +194,7 @@ def main() -> None:
             ema = ModelEMA(model, decay=ema_decay)
             print(f"EMA 활성화 (decay={ema_decay}, eval every {ema_eval_interval} iter)")
 
-        # --- 체크포인트 경로 ---
-        ckpt_dir = cfg["checkpoint"]["dir"]
-        ckpt_name = f"best_{cfg['wandb']['run_name']}.pth"
-        ckpt_path = os.path.join(ckpt_dir, ckpt_name)
-        last_ckpt_path = os.path.join(ckpt_dir, f"last_{cfg['wandb']['run_name']}.pth")
+        # --- 체크포인트 경로 (위에서 이미 계산됨) ---
         os.makedirs(ckpt_dir, exist_ok=True)
         print(f"체크포인트 경로: {ckpt_path}")
         print(f"Latest 체크포인트: {last_ckpt_path}")
@@ -307,12 +325,14 @@ def main() -> None:
                         ckpt_path, iter_count, model, optimizer,
                         scaler=scaler, ema=ema,
                         best_val_top1=best_val_top1, cfg=cfg,
+                        wandb_run_id=run.id,
                     )
                 # latest ckpt: mIoU 갱신 여부와 무관하게 매 eval마다 덮어씀 (crash 복구용)
                 save_checkpoint(
                     last_ckpt_path, iter_count, model, optimizer,
                     scaler=scaler, ema=ema,
                     best_val_top1=best_val_top1, cfg=cfg,
+                    wandb_run_id=run.id,
                 )
                 print(
                     f"  [Val] Loss: {val_metrics['loss']:.4f} | "

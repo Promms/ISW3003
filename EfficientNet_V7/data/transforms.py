@@ -118,28 +118,22 @@ def _color_jitter(image: np.ndarray,
 
 def train_augment(image: np.ndarray, mask: np.ndarray,
                   crop_size: int, apply_blur: bool = True):
-    """기하 + 광도 augmentation. (RGB uint8 + uint8 mask 전제)
-
-    각 단계는 확률 게이트로 분리. 항상 적용하면 작은 객체가 매번 변형되어
-    학습 ceiling 낮아짐. crop은 항상 적용 (출력 shape 보장).
-    """
-    # HFlip (p=0.5)
+    """기하 + 광도 augmentation. (RGB uint8 + uint8 mask 전제)"""
+    # HFlip
     if random.random() > 0.5:
         image = cv2.flip(image, 1)
         mask  = cv2.flip(mask, 1)
 
-    # Rotation ±7° (p=0.5)
-    if random.random() < 0.5:
-        angle = random.uniform(-7.0, 7.0)
-        image, mask = _rotate(image, mask, angle)
+    # Rotation ±7°
+    angle = random.uniform(-7.0, 7.0)
+    image, mask = _rotate(image, mask, angle)
 
-    # Large Scale Jittering [0.5, 1.75] (p=0.8 — Copy-Paste 핵심이라 높게 유지)
-    if random.random() < 0.8:
-        scale = random.uniform(0.5, 1.75)
-        h, w = image.shape[:2]
-        image, mask = _resize(image, mask, max(1, int(h * scale)), max(1, int(w * scale)))
+    # Large Scale Jittering [0.5, 1.75]
+    scale = random.uniform(0.5, 1.75)
+    h, w = image.shape[:2]
+    image, mask = _resize(image, mask, max(1, int(h * scale)), max(1, int(w * scale)))
 
-    # Pad (미달 시) + RandomCrop (항상)
+    # Pad (미달 시) + RandomCrop
     image, mask = _pad_to(image, mask, crop_size)
     image, mask = _random_crop(image, mask, crop_size)
 
@@ -147,8 +141,7 @@ def train_augment(image: np.ndarray, mask: np.ndarray,
     if apply_blur and random.random() < 0.3:
         sigma = random.uniform(0.1, 1.5)
         image = cv2.GaussianBlur(image, (5, 5), sigma)
-    if random.random() < 0.7:
-        image = _color_jitter(image)
+    image = _color_jitter(image)
 
     return image, mask
 

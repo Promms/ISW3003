@@ -1,6 +1,6 @@
 import torch
 import onnx
-from models.deeplabv3plus_efficientnet import DeepLabV3Plus_EfficientNet
+from deeplabv3plus_efficientnet import DeepLabV3Plus_EfficientNet # 파일명이 다르면 수정하세요
 
 # 1. 모델 준비
 num_classes = 21 # 대회 규격에 맞는 클래스 수로 설정

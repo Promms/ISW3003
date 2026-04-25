@@ -94,7 +94,7 @@ class CocoVOCSegDataset(Dataset):
         augment: bool = False,
         filter_empty: bool = True,
         copy_paste_prob: float = 0.1,    # 15→10%: 데이터 bound 완화. 거의 비슷한 aug 다양성 유지
-        random_erasing_prob: float = 0.25,
+        random_erasing_prob: float = 0.5,
         overlap_policy: str = "smallest_first",  # "smallest_first" | "ignore"
         mask_cache_dir: str | None = None,        # 사전 렌더된 VOC-index PNG 폴더
     ):
