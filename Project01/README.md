@@ -71,6 +71,8 @@ python src/predict.py \
 ```
 
 The prediction filenames match the input image stems.
+Inference uses a single fixed-size forward pass at `480x640`; no TTA or
+multi-scale inference is used.
 
 ## FLOPs / ONNX Structure
 
