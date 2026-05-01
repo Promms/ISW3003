@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
 import onnx
 import torch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from models.deeplabv3plus import deeplab_v3
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backbone", default="mobilenet_v3_large",
-                        choices=["mobilenet_v2", "mobilenet_v3_large"])
-    parser.add_argument("--aspp_channels", type=int, default=224)
+    parser.add_argument("--aspp_channels", type=int, default=256)
     parser.add_argument("--decoder_low_channels", type=int, default=48)
     parser.add_argument("--num_classes", type=int, default=21)
     parser.add_argument("--height", type=int, default=480)
@@ -25,7 +28,6 @@ def main() -> None:
     args = parse_args()
     model = deeplab_v3(
         num_classes=args.num_classes,
-        backbone=args.backbone,
         aspp_channels=args.aspp_channels,
         decoder_low_channels=args.decoder_low_channels,
         pretrained_backbone=False,

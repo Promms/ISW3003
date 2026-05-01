@@ -1,7 +1,6 @@
 model:
-  backbone: "mobilenet_v3_large" # "mobilenet_v2" | "mobilenet_v3_large"
   num_classes: 21
-  aspp_channels: 224             # try 224 first, use 192 for extra GFLOPs margin
+  aspp_channels: 256
   decoder_low_channels: 48
   pretrained_backbone: true
 
@@ -10,12 +9,13 @@ data:
   dataset_name: "pascal_voc"
   years: ["2007", "2012"]
   crop_size: 384
-  num_workers: 2
-  val_num_workers: 0
+  num_workers: 4
+  val_num_workers: 2
   val_split: "val"
   download: false
   pin_memory: true
-  preload: true
+  persistent_workers: true
+  prefetch_factor: 2
   coco:
     enabled: true
     img_root: "/content/coco/train2017"
@@ -31,19 +31,20 @@ training:
   log_interval: 100
   eval_interval: 4000
   learning_rate: 1.0e-3
-  backbone_lr_scale: 0.5
+  backbone_lr_scale: 0.25
   weight_decay: 1.0e-4
-  warmup_iters: 500
+  warmup_iters: 1000
   freeze_iters: 3000
   resume: false
   amp: true
+  grad_clip_norm: 1.0
   dice_weight: 1.0
   lovasz_weight: 0.5
-  ema_decay: 0.9998
-  ema_update_every: 8
+  ema_decay: 0.9999
+  ema_update_every: 1
 
 checkpoint:
-  dir: "/content/drive/MyDrive/checkpoints"
+  dir: "checkpoints"
   # train.py writes only:
   #   best_ema_<run_name>.pth
   #   last_<run_name>.pth
@@ -51,7 +52,7 @@ checkpoint:
 wandb:
   team: "tmdgk115-sungkyunkwan-university"
   project: "osai-project01"
-  run_name: "MobileNetV3_Large_ASPP224"
+  run_name: "MobileNetV3_Large_ASPP256"
 
 device: "cuda"
 seed: 42

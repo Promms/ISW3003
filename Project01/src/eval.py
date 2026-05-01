@@ -92,8 +92,7 @@ def main() -> None:
     model_cfg = cfg.get("model", {})
     model = deeplab_v3(
         num_classes=num_classes,
-        backbone=model_cfg.get("backbone", "mobilenet_v2"),
-        aspp_channels=model_cfg.get("aspp_channels", 224),
+        aspp_channels=model_cfg.get("aspp_channels", 256),
         decoder_low_channels=model_cfg.get("decoder_low_channels", 48),
         pretrained_backbone=False,
     ).to(device)

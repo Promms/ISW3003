@@ -14,9 +14,7 @@ from models.deeplabv3plus import deeplab_v3  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backbone", default="mobilenet_v2",
-                        choices=["mobilenet_v2", "mobilenet_v3_large"])
-    parser.add_argument("--aspp_channels", type=int, default=224)
+    parser.add_argument("--aspp_channels", type=int, default=256)
     parser.add_argument("--decoder_low_channels", type=int, default=48)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--width", type=int, default=640)
@@ -66,7 +64,6 @@ def main() -> None:
     args = parse_args()
     model = deeplab_v3(
         num_classes=args.num_classes,
-        backbone=args.backbone,
         aspp_channels=args.aspp_channels,
         decoder_low_channels=args.decoder_low_channels,
         pretrained_backbone=False,
@@ -74,7 +71,7 @@ def main() -> None:
     gflops, parts = measure(model, (1, 3, args.height, args.width))
     params = sum(p.numel() for p in model.parameters())
 
-    print(f"backbone: {args.backbone}")
+    print("backbone: mobilenet_v3_large")
     print(f"aspp_channels: {args.aspp_channels}")
     print(f"input: 1x3x{args.height}x{args.width}")
     print(f"params: {params:,}")

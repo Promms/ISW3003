@@ -15,9 +15,36 @@ from data.pascal_voc import build_voc_datasets, get_loader
 from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.losses import CEDiceLovaszLoss
 from utils.ema import ModelEMA
-from utils.metrics import AverageMeter, accuracy, accuracy_counts, mIoU
+from utils.metrics import (
+    AverageMeter,
+    accuracy,
+    accuracy_counts,
+    confusion_matrix,
+    miou_from_confusion,
+    per_class_iou_from_confusion,
+)
 from utils.optim import build_optimizer, poly_lr_step, set_backbone_requires_grad
 from models.deeplabv3plus import deeplab_v3
+
+VOC_CLASSES = [
+    "background", "aeroplane", "bicycle", "bird", "boat",
+    "bottle", "bus", "car", "cat", "chair",
+    "cow", "diningtable", "dog", "horse", "motorbike",
+    "person", "pottedplant", "sheep", "sofa", "train",
+    "tvmonitor",
+]
+
+VOC_PALETTE = np.array([
+    [0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0],
+    [0, 0, 128], [128, 0, 128], [0, 128, 128], [128, 128, 128],
+    [64, 0, 0], [192, 0, 0], [64, 128, 0], [192, 128, 0],
+    [64, 0, 128], [192, 0, 128], [64, 128, 128], [192, 128, 128],
+    [0, 64, 0], [128, 64, 0], [0, 192, 0], [128, 192, 0],
+    [0, 64, 128],
+], dtype=np.uint8)
+
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,12 +73,15 @@ def evaluate(
     criterion: nn.Module,
     device: torch.device,
     num_classes: int,
+    collect_images: bool = False,
+    max_images: int = 4,
 ) -> dict[str, float]:
     was_training = model.training
     model.eval()
     loss_meter = AverageMeter()
     acc_meter = AverageMeter()
-    miou_meter = AverageMeter()
+    conf = torch.zeros(num_classes, num_classes, dtype=torch.int64, device=device)
+    examples = []
 
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
@@ -61,11 +91,45 @@ def evaluate(
         n = images.size(0)
         loss_meter.update(loss.item(), n)
         acc_meter.update(accuracy(logits, labels), n)
-        miou_meter.update(mIoU(logits, labels, num_classes), n)
+        conf += confusion_matrix(logits, labels, num_classes)
+
+        if collect_images and len(examples) < max_images:
+            preds = logits.argmax(dim=1)
+            take = min(max_images - len(examples), images.size(0))
+            for idx in range(take):
+                examples.append((
+                    images[idx].detach().cpu(),
+                    labels[idx].detach().cpu(),
+                    preds[idx].detach().cpu(),
+                ))
 
     if was_training:
         model.train()
-    return {"loss": loss_meter.avg, "acc": acc_meter.avg, "mIoU": miou_meter.avg}
+
+    per_class_iou = per_class_iou_from_confusion(conf).detach().cpu().tolist()
+    return {
+        "loss": loss_meter.avg,
+        "acc": acc_meter.avg,
+        "mIoU": miou_from_confusion(conf).item(),
+        "per_class_iou": per_class_iou,
+        "examples": examples,
+    }
+
+
+def make_prediction_overlay(image: torch.Tensor, pred: torch.Tensor, alpha: float = 0.45) -> np.ndarray:
+    image_np = image.permute(1, 2, 0).numpy()
+    image_np = np.clip((image_np * IMAGENET_STD + IMAGENET_MEAN) * 255.0, 0, 255).astype(np.uint8)
+    pred_np = pred.numpy()
+    color_mask = VOC_PALETTE[np.clip(pred_np, 0, len(VOC_PALETTE) - 1)]
+    return np.clip(image_np * (1.0 - alpha) + color_mask * alpha, 0, 255).astype(np.uint8)
+
+
+def wandb_per_class(prefix: str, values: list[float]) -> dict[str, float]:
+    logs = {}
+    for name, value in zip(VOC_CLASSES, values):
+        if value == value:
+            logs[f"{prefix}/{name}"] = value
+    return logs
 
 
 def build_train_loader(cfg: dict):
@@ -76,7 +140,6 @@ def build_train_loader(cfg: dict):
         crop_size=cfg["data"]["crop_size"],
         augment=True,
         download=cfg["data"]["download"],
-        preload=cfg["data"].get("preload", True),
     )
     voc_total = sum(len(d) for d in voc_train)
 
@@ -102,6 +165,8 @@ def build_train_loader(cfg: dict):
         batch_size=cfg["training"]["batch_size"],
         num_workers=cfg["data"]["num_workers"],
         pin_memory=cfg["data"]["pin_memory"],
+        persistent_workers=cfg["data"].get("persistent_workers", False),
+        prefetch_factor=cfg["data"].get("prefetch_factor", 2),
         shuffle=True,
         drop_last=True,
     )
@@ -116,7 +181,8 @@ def build_val_loader(cfg: dict):
         batch_size=cfg["training"].get("val_batch_size", cfg["training"]["batch_size"]),
         num_workers=cfg["data"].get("val_num_workers", 0),
         pin_memory=cfg["data"]["pin_memory"],
-        preload=False,
+        persistent_workers=cfg["data"].get("persistent_workers", False),
+        prefetch_factor=cfg["data"].get("prefetch_factor", 2),
     )
 
 
@@ -169,14 +235,13 @@ def main() -> None:
         model_cfg = cfg.get("model", {})
         model = deeplab_v3(
             num_classes=num_classes,
-            backbone=model_cfg.get("backbone", "mobilenet_v2"),
-            aspp_channels=model_cfg.get("aspp_channels", 224),
+            aspp_channels=model_cfg.get("aspp_channels", 256),
             decoder_low_channels=model_cfg.get("decoder_low_channels", 48),
             pretrained_backbone=model_cfg.get("pretrained_backbone", True),
         ).to(device)
         print(
-            f"Backbone: {model_cfg.get('backbone', 'mobilenet_v2')} | "
-            f"ASPP/decoder channels: {model_cfg.get('aspp_channels', 224)}"
+            "Backbone: mobilenet_v3_large | "
+            f"ASPP/decoder channels: {model_cfg.get('aspp_channels', 256)}"
         )
         print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -213,6 +278,7 @@ def main() -> None:
         log_interval = cfg["training"]["log_interval"]
         eval_interval = cfg["training"]["eval_interval"]
         ema_update_every = cfg["training"].get("ema_update_every", 1)
+        grad_clip_norm = cfg["training"].get("grad_clip_norm", 0.0)
 
         loss_accum = torch.zeros((), device=device)
         correct_accum = torch.zeros((), device=device, dtype=torch.long)
@@ -240,6 +306,9 @@ def main() -> None:
                 loss = criterion(logits, labels)
 
             scaler.scale(loss).backward()
+            if grad_clip_norm > 0:
+                scaler.unscale_(optimizer)
+                nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
             scaler.step(optimizer)
             scaler.update()
 
@@ -286,10 +355,17 @@ def main() -> None:
 
             if iter_count % eval_interval == 0:
                 raw_metrics = evaluate(model, val_loader, criterion, device, num_classes)
-                ema_metrics = evaluate(ema.ema_model, val_loader, criterion, device, num_classes)
+                ema_metrics = evaluate(
+                    ema.ema_model,
+                    val_loader,
+                    criterion,
+                    device,
+                    num_classes,
+                    collect_images=True,
+                )
                 ema_miou = ema_metrics["mIoU"]
 
-                run.log({
+                log_payload = {
                     "step": iter_count,
                     "val/loss": raw_metrics["loss"],
                     "val/acc": raw_metrics["acc"],
@@ -298,7 +374,20 @@ def main() -> None:
                     "val/ema_acc": ema_metrics["acc"],
                     "val/ema_mIoU": ema_miou,
                     "best/ema_mIoU": max(best_ema_miou, ema_miou),
-                })
+                }
+                log_payload.update(wandb_per_class("val_iou", raw_metrics["per_class_iou"]))
+                log_payload.update(wandb_per_class("val_ema_iou", ema_metrics["per_class_iou"]))
+
+                if ema_metrics["examples"]:
+                    log_payload["val/ema_prediction_overlay"] = [
+                        wandb.Image(
+                            make_prediction_overlay(image, pred),
+                            caption=f"sample_{idx}",
+                        )
+                        for idx, (image, _label, pred) in enumerate(ema_metrics["examples"])
+                    ]
+
+                run.log(log_payload)
 
                 if ema_miou > best_ema_miou:
                     best_ema_miou = ema_miou
