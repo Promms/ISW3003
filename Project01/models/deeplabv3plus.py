@@ -1,11 +1,12 @@
+from __future__ import annotations
+
 from typing import List
 
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch import Tensor
-
 import torchvision.models as models
+import torch
+from torch import Tensor
 
 from utils.blocks import SEBlock
 
@@ -37,26 +38,42 @@ def depthwise_separable_conv(in_ch: int, out_ch: int, dilation: int) -> nn.Seque
     )
 
 
-def _apply_dilation_to_mobilenet(features: nn.Sequential, start: int, dilation: int) -> None:
-    """
-    MobileNetV2 features[start:] 블록에 dilation을 적용하여 output stride를 유지합니다.
-
-    MobileNetV2 기본 output stride:
-      features[:4]  → stride 4   (backbone_low, 24ch)
-      features[4:14] → stride 16  (정상)
-      features[14:]  → stride 32  ← 여기서 stride=2가 한 번 더 발생
-
-    features[14]의 depthwise conv가 stride=2이므로, 이를 stride=1 + dilation=2로 교체하면
-    output stride가 16으로 유지됩니다. ASPP rates=[6,12,18]은 output_stride=16 기준으로
-    설계된 값이므로 이 수정 후 ASPP receptive field가 논문과 일치합니다.
-    """
+def apply_output_stride_16(features: nn.Sequential, start: int, dilation: int = 2) -> None:
+    """Replace the final stride-2 stage with dilation to keep output stride 16."""
     for i in range(start, len(features)):
-        for m in features[i].modules():
-            if isinstance(m, nn.Conv2d) and m.kernel_size != (1, 1):
-                if m.stride == (2, 2):
-                    m.stride = (1, 1)
-                m.dilation = (dilation, dilation)
-                m.padding = (dilation, dilation)
+        for layer in features[i].modules():
+            if isinstance(layer, nn.Conv2d) and layer.kernel_size != (1, 1):
+                if layer.stride == (2, 2):
+                    layer.stride = (1, 1)
+                layer.dilation = (dilation, dilation)
+                kh, kw = layer.kernel_size
+                layer.padding = ((kh - 1) * dilation // 2, (kw - 1) * dilation // 2)
+
+
+def build_mobilenet_backbone(
+    backbone: str,
+    pretrained: bool,
+) -> tuple[nn.Sequential, nn.Sequential, int, int]:
+    """Return low/high feature modules plus their channel counts."""
+    if backbone == "mobilenet_v2":
+        weights = models.MobileNet_V2_Weights.IMAGENET1K_V1 if pretrained else None
+        features = models.mobilenet_v2(weights=weights).features
+        low = features[:4]       # stride 4, 24 channels
+        apply_output_stride_16(features, start=14)
+        high = features[4:]      # stride 16 after dilation, 1280 channels
+        return low, high, 24, 1280
+
+    if backbone == "mobilenet_v3_large":
+        weights = models.MobileNet_V3_Large_Weights.IMAGENET1K_V1 if pretrained else None
+        features = models.mobilenet_v3_large(weights=weights).features
+        low = features[:4]       # stride 4, 24 channels
+        apply_output_stride_16(features, start=13)
+        high = features[4:]      # stride 16 after dilation, 960 channels
+        return low, high, 24, 960
+
+    raise ValueError(
+        f"Unknown backbone '{backbone}'. Expected 'mobilenet_v2' or 'mobilenet_v3_large'."
+    )
 
 
 class ASPP(nn.Module):
@@ -72,87 +89,89 @@ class ASPP(nn.Module):
             nn.AdaptiveAvgPool2d(1),
             conv1x1(in_ch, out_ch),
             nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
         )
         self.project = nn.Sequential(
             conv1x1(out_ch * 5, out_ch),
             nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
         )
-        # ASPP 5개 branch를 합친 뒤 채널별 중요도 재보정
         self.se = SEBlock(out_ch, reduction=16)
 
     def forward(self, x: Tensor) -> Tensor:
-        results = [branch(x) for branch in self.branches]
-
         h, w = x.shape[-2:]
-        res_pool = self.global_pool(x)
-        res_pool = F.interpolate(res_pool, size=(h, w), mode='bilinear', align_corners=False)
-        results.append(res_pool)
-
-        combined = torch.cat(results, dim=1)
-        out = self.project(combined)
-        out = self.se(out)
-        return out
+        results = [branch(x) for branch in self.branches]
+        pooled = self.global_pool(x)
+        pooled = F.interpolate(pooled, size=(h, w), mode="bilinear", align_corners=False)
+        results.append(pooled)
+        return self.se(self.project(torch.cat(results, dim=1)))
 
 
 class Decoder(nn.Module):
-    def __init__(self, in_ch_low: int, in_ch_aspp: int, out_ch: int) -> None:
+    def __init__(
+        self,
+        in_ch_low: int,
+        in_ch_aspp: int,
+        out_ch: int,
+        low_project_ch: int,
+    ) -> None:
         super().__init__()
-
         self.project = nn.Sequential(
-            conv1x1(in_ch_low, 48),
-            nn.BatchNorm2d(48),
-            nn.ReLU(inplace=True)
+            conv1x1(in_ch_low, low_project_ch),
+            nn.BatchNorm2d(low_project_ch),
+            nn.ReLU(inplace=True),
         )
-
         self.refine = nn.Sequential(
-            depthwise_separable_conv(48 + in_ch_aspp, in_ch_aspp, dilation=1),
-            depthwise_separable_conv(in_ch_aspp, in_ch_aspp, dilation=1)
+            depthwise_separable_conv(low_project_ch + in_ch_aspp, in_ch_aspp, dilation=1),
+            depthwise_separable_conv(in_ch_aspp, in_ch_aspp, dilation=1),
         )
-
         self.final_conv = nn.Conv2d(in_ch_aspp, out_ch, kernel_size=1)
 
     def forward(self, x_low: Tensor, x_aspp: Tensor) -> Tensor:
-        low_level_feat = self.project(x_low)
-
-        h_low, w_low = x_low.shape[-2:]
-        aspp_upsampled = F.interpolate(x_aspp, size=(h_low, w_low), mode='bilinear', align_corners=False)
-
-        combined = torch.cat([low_level_feat, aspp_upsampled], dim=1)
-        out = self.refine(combined)
-        out = self.final_conv(out)
-        return out
+        low = self.project(x_low)
+        x_aspp = F.interpolate(x_aspp, size=x_low.shape[-2:], mode="bilinear", align_corners=False)
+        return self.final_conv(self.refine(torch.cat([low, x_aspp], dim=1)))
 
 
 class DeepLabV3Plus(nn.Module):
-    def __init__(self, num_classes: int = 21) -> None:
+    def __init__(
+        self,
+        num_classes: int = 21,
+        backbone: str = "mobilenet_v2",
+        aspp_channels: int = 224,
+        decoder_low_channels: int = 48,
+        pretrained_backbone: bool = True,
+    ) -> None:
         super().__init__()
-        # FLOPs 절감을 위해 backbone으로 MobileNetV2 사용
-        mnet = models.mobilenet_v2(weights='IMAGENET1K_V1').features
-
-        # output stride 4, 24ch — decoder skip connection용 low-level feature
-        self.backbone_low = mnet[:4]
-
-        # features[14]의 stride=2 depthwise conv를 stride=1 + dilation=2로 교체
-        # → output stride 32에서 16으로 유지 (ASPP rates=[6,12,18]과 정합)
-        _apply_dilation_to_mobilenet(mnet, start=14, dilation=2)
-        self.backbone_high = mnet[4:]
-
-        self.aspp = ASPP(1280, 256, rates=[6, 12, 18])
-        self.decoder = Decoder(24, 256, num_classes)
+        self.backbone_name = backbone
+        self.aspp_channels = aspp_channels
+        self.backbone_low, self.backbone_high, low_ch, high_ch = build_mobilenet_backbone(
+            backbone=backbone,
+            pretrained=pretrained_backbone,
+        )
+        self.aspp = ASPP(high_ch, aspp_channels, rates=[6, 12, 18])
+        self.decoder = Decoder(low_ch, aspp_channels, num_classes, decoder_low_channels)
 
     def forward(self, x: Tensor) -> Tensor:
-        h_ori, w_ori = x.shape[-2:]
-
+        out_size = x.shape[-2:]
         low_feat = self.backbone_low(x)
         high_feat = self.backbone_high(low_feat)
-
         aspp_feat = self.aspp(high_feat)
         out = self.decoder(low_feat, aspp_feat)
-        out = F.interpolate(out, size=(h_ori, w_ori), mode='bilinear', align_corners=False)
-        return out
+        return F.interpolate(out, size=out_size, mode="bilinear", align_corners=False)
 
 
-def deeplab_v3(num_classes: int = 21) -> DeepLabV3Plus:
-    return DeepLabV3Plus(num_classes=num_classes)
+def deeplab_v3(
+    num_classes: int = 21,
+    backbone: str = "mobilenet_v2",
+    aspp_channels: int = 224,
+    decoder_low_channels: int = 48,
+    pretrained_backbone: bool = True,
+) -> DeepLabV3Plus:
+    return DeepLabV3Plus(
+        num_classes=num_classes,
+        backbone=backbone,
+        aspp_channels=aspp_channels,
+        decoder_low_channels=decoder_low_channels,
+        pretrained_backbone=pretrained_backbone,
+    )

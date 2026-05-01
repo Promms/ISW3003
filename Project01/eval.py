@@ -89,7 +89,14 @@ def main() -> None:
         preload=False,
     )
 
-    model = deeplab_v3(num_classes=num_classes).to(device)
+    model_cfg = cfg.get("model", {})
+    model = deeplab_v3(
+        num_classes=num_classes,
+        backbone=model_cfg.get("backbone", "mobilenet_v2"),
+        aspp_channels=model_cfg.get("aspp_channels", 224),
+        decoder_low_channels=model_cfg.get("decoder_low_channels", 48),
+        pretrained_backbone=False,
+    ).to(device)
     ckpt = torch.load(args.ckpt, map_location=device, weights_only=False)
     if args.use_ema and "ema_state_dict" in ckpt:
         model.load_state_dict(ckpt["ema_state_dict"])

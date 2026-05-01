@@ -166,8 +166,18 @@ def main() -> None:
         val_loader = build_val_loader(cfg)
 
         num_classes = cfg["model"]["num_classes"]
-        model = deeplab_v3(num_classes=num_classes).to(device)
-        print("Backbone: MobileNetV2")
+        model_cfg = cfg.get("model", {})
+        model = deeplab_v3(
+            num_classes=num_classes,
+            backbone=model_cfg.get("backbone", "mobilenet_v2"),
+            aspp_channels=model_cfg.get("aspp_channels", 224),
+            decoder_low_channels=model_cfg.get("decoder_low_channels", 48),
+            pretrained_backbone=model_cfg.get("pretrained_backbone", True),
+        ).to(device)
+        print(
+            f"Backbone: {model_cfg.get('backbone', 'mobilenet_v2')} | "
+            f"ASPP/decoder channels: {model_cfg.get('aspp_channels', 224)}"
+        )
         print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
         freeze_iters = cfg["training"].get("freeze_iters", 0)

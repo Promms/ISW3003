@@ -1,5 +1,9 @@
 model:
+  backbone: "mobilenet_v3_large" # "mobilenet_v2" | "mobilenet_v3_large"
   num_classes: 21
+  aspp_channels: 224             # try 224 first, use 192 for extra GFLOPs margin
+  decoder_low_channels: 48
+  pretrained_backbone: true
 
 data:
   root: "/content/data"
@@ -47,7 +51,7 @@ checkpoint:
 wandb:
   team: "tmdgk115-sungkyunkwan-university"
   project: "osai-project01"
-  run_name: "MobileNet_Project01"
+  run_name: "MobileNetV3_Large_ASPP224"
 
 device: "cuda"
 seed: 42

@@ -30,6 +30,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", type=str, required=True)
     parser.add_argument("--num_classes", type=int, default=21)
+    parser.add_argument("--backbone", type=str, default="mobilenet_v3_large",
+                        choices=["mobilenet_v2", "mobilenet_v3_large"])
+    parser.add_argument("--aspp_channels", type=int, default=224)
+    parser.add_argument("--decoder_low_channels", type=int, default=48)
     parser.add_argument("--img_dir", type=str, default="submit/img")
     parser.add_argument("--pred_dir", type=str, default="submit/pred")
     parser.add_argument("--infer_h", type=int, default=480)
@@ -72,7 +76,13 @@ def main() -> None:
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     infer_size = (args.infer_h, args.infer_w)
 
-    model = deeplab_v3(num_classes=args.num_classes).to(device)
+    model = deeplab_v3(
+        num_classes=args.num_classes,
+        backbone=args.backbone,
+        aspp_channels=args.aspp_channels,
+        decoder_low_channels=args.decoder_low_channels,
+        pretrained_backbone=False,
+    ).to(device)
     ckpt = torch.load(args.ckpt, map_location=device, weights_only=False)
     if args.use_ema and "ema_state_dict" in ckpt:
         model.load_state_dict(ckpt["ema_state_dict"])
