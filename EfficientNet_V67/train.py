@@ -1,5 +1,9 @@
 """
-EfficientNet 전용 학습 스크립트 (V6: CE + Dice + Lovasz softmax).
+EfficientNet-B1 전용 학습 스크립트 (V7).
+
+V5_2(B0) 대비 변경:
+    - 백본 efficientnet_b0 → efficientnet_b1 (width 동일, depth +10%)
+    - 그 외 셋팅(loss, aug, lr, freeze 등) V5_2와 동일
 
 사용법:
     python train.py --config src/semantic_segmentation_efficientnet.yaml
@@ -10,7 +14,6 @@ EfficientNet 전용 학습 스크립트 (V6: CE + Dice + Lovasz softmax).
     - Mixed Precision (AMP)
     - EMA (Exponential Moving Average) shadow model
     - WandB 로깅 + best ckpt 자동 저장
-    - Loss: CE + dice + lovasz_softmax (mIoU 직접 최적화)
 """
 
 from __future__ import annotations
@@ -171,10 +174,10 @@ def main() -> None:
             print(f"Backbone freeze: 0 ~ {freeze_iters} iter")
 
         # --- Loss / Optimizer ---
-        # CE + Dice (각 1.0) + Lovasz (0.5). Lovasz는 mIoU 직접 최적화하지만 무거워서 가중치 보수적.
+        lovasz_weight = cfg["training"].get("lovasz_weight", 0.5)
         criterion = CEDiceLovaszLoss(
             num_classes=num_classes, ignore_index=255,
-            dice_weight=1.0, lovasz_weight=0.5,
+            dice_weight=1.0, lovasz_weight=lovasz_weight,
         )
         optimizer = build_optimizer(model, cfg)
 
@@ -227,7 +230,21 @@ def main() -> None:
             else:
                 print("resume=true지만 ckpt 없음 → 처음부터 학습")
         else:
-            print("처음부터 학습 시작")
+            # --- Fine-tune from: model weights만 로드, optimizer는 fresh ---
+            # V7 체크포인트에서 가중치만 가져와 Lovasz fine-tuning 시작
+            finetune_from = cfg["training"].get("finetune_from")
+            if finetune_from:
+                if os.path.exists(finetune_from):
+                    ckpt = torch.load(finetune_from, map_location=device, weights_only=False)
+                    model.load_state_dict(ckpt["model_state_dict"])
+                    if ema is not None and ckpt.get("ema_state_dict") is not None:
+                        ema.ema_model.load_state_dict(ckpt["ema_state_dict"])
+                    iter_count = ckpt.get("iter", 0)
+                    print(f"Fine-tune 시작: {os.path.basename(finetune_from)} | iter {iter_count}부터, optimizer fresh")
+                else:
+                    print(f"[WARNING] finetune_from 경로 없음: {finetune_from} → 처음부터 학습")
+            else:
+                print("처음부터 학습 시작")
 
         # --- 학습 루프 ---
         # loss/acc는 매 iter .item() 하지 않고 GPU 텐서로 누적 → log_interval 마다만 sync

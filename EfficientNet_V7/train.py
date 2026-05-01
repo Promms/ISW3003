@@ -34,6 +34,7 @@ from utils.ema import ModelEMA
 from utils.metrics import AverageMeter, accuracy, accuracy_counts, mIoU
 from utils.model_factory import build_model
 from utils.optim import build_optimizer, poly_lr_step, set_backbone_requires_grad
+from utils.param_utils import log_parameter_counts
 
 
 def parse_args() -> argparse.Namespace:
@@ -78,12 +79,14 @@ def main() -> None:
     # --- WandB resume: ckpt에서 run_id 미리 뽑아 같은 run에 이어 기록 ---
     ckpt_dir = cfg["checkpoint"]["dir"]
     run_name = cfg["wandb"]["run_name"]
-    ckpt_path = os.path.join(ckpt_dir, f"best_{run_name}.pth")
+    # raw best와 EMA best를 분리 저장 (한쪽이 다른 쪽 덮어쓰는 문제 방지)
+    best_raw_path = os.path.join(ckpt_dir, f"best_raw_{run_name}.pth")
+    best_ema_path = os.path.join(ckpt_dir, f"best_ema_{run_name}.pth")
     last_ckpt_path = os.path.join(ckpt_dir, f"last_{run_name}.pth")
 
     wandb_run_id = None
     if cfg["training"]["resume"]:
-        for p in (last_ckpt_path, ckpt_path):
+        for p in (last_ckpt_path, best_ema_path, best_raw_path):
             if os.path.exists(p):
                 try:
                     meta = torch.load(p, map_location="cpu", weights_only=False)
@@ -162,6 +165,7 @@ def main() -> None:
         num_classes = cfg["model"]["num_classes"]
         model = build_model(backbone, num_classes).to(device)
         print(f"Backbone: {backbone}")
+        log_parameter_counts(model)
 
         # --- Freeze (Stage 1) ---
         freeze_iters = cfg["training"].get("freeze_iters", 0)
@@ -195,23 +199,29 @@ def main() -> None:
 
         # --- 체크포인트 경로 (위에서 이미 계산됨) ---
         os.makedirs(ckpt_dir, exist_ok=True)
-        print(f"체크포인트 경로: {ckpt_path}")
+        print(f"Best raw 체크포인트: {best_raw_path}")
+        print(f"Best EMA 체크포인트: {best_ema_path}")
         print(f"Latest 체크포인트: {last_ckpt_path}")
 
         # --- Resume ---
-        # latest 우선 (crash 직후 가장 최근 state). 없으면 best로 폴백.
+        # latest 우선 (crash 직후 가장 최근 state). 없으면 best_ema → best_raw → legacy 순.
         iter_count = 0
-        best_val_top1 = 0.0
+        best_raw_top1 = 0.0
+        best_ema_top1 = 0.0
         if cfg["training"]["resume"]:
-            resume_path = last_ckpt_path if os.path.exists(last_ckpt_path) else \
-                          (ckpt_path if os.path.exists(ckpt_path) else None)
+            resume_path = None
+            for p in (last_ckpt_path, best_ema_path, best_raw_path):
+                if os.path.exists(p):
+                    resume_path = p
+                    break
             if resume_path is not None:
                 meta = load_checkpoint(resume_path, model, optimizer,
                                        scaler if use_amp else None, ema, device)
                 iter_count = meta["iter"]
-                best_val_top1 = meta["best_val_top1"]
+                best_raw_top1 = meta.get("best_raw_top1", 0.0)
+                best_ema_top1 = meta.get("best_ema_top1", 0.0)
                 print(f"체크포인트 불러옴: {os.path.basename(resume_path)} | "
-                      f"iter {iter_count}, best mIoU {best_val_top1:.4f}"
+                      f"iter {iter_count}, best raw {best_raw_top1:.4f} / ema {best_ema_top1:.4f}"
                       + ("  [EMA 포함]" if meta["has_ema"] else ""))
             else:
                 print("resume=true지만 ckpt 없음 → 처음부터 학습")
@@ -315,28 +325,42 @@ def main() -> None:
 
                 run.log(log_payload)
 
-                current_best = max(val_metrics["top1/mIoU"], ema_mIoU) if ema_mIoU is not None \
-                               else val_metrics["top1/mIoU"]
-                is_best = current_best > best_val_top1
-                if is_best:
-                    best_val_top1 = current_best
+                # raw best ckpt 갱신
+                raw_mIoU = val_metrics["top1/mIoU"]
+                raw_tag = ""
+                if raw_mIoU > best_raw_top1:
+                    best_raw_top1 = raw_mIoU
+                    raw_tag = "  [best raw]"
                     save_checkpoint(
-                        ckpt_path, iter_count, model, optimizer,
-                        scaler=scaler, ema=ema,
-                        best_val_top1=best_val_top1, cfg=cfg,
+                        best_raw_path, iter_count, model, optimizer,
+                        scaler=scaler, ema=ema, cfg=cfg,
                         wandb_run_id=run.id,
+                        best_raw_top1=best_raw_top1,
+                        best_ema_top1=best_ema_top1,
                     )
-                # latest ckpt: mIoU 갱신 여부와 무관하게 매 eval마다 덮어씀 (crash 복구용)
+                # EMA best ckpt 갱신 (EMA eval 한 시점만)
+                if ema_mIoU is not None and ema_mIoU > best_ema_top1:
+                    best_ema_top1 = ema_mIoU
+                    print(f"  → best EMA 갱신: {ema_mIoU:.4f}")
+                    save_checkpoint(
+                        best_ema_path, iter_count, model, optimizer,
+                        scaler=scaler, ema=ema, cfg=cfg,
+                        wandb_run_id=run.id,
+                        best_raw_top1=best_raw_top1,
+                        best_ema_top1=best_ema_top1,
+                    )
+                # latest ckpt: 매 eval 덮어쓰기 (crash 복구용)
                 save_checkpoint(
                     last_ckpt_path, iter_count, model, optimizer,
-                    scaler=scaler, ema=ema,
-                    best_val_top1=best_val_top1, cfg=cfg,
+                    scaler=scaler, ema=ema, cfg=cfg,
                     wandb_run_id=run.id,
+                    best_raw_top1=best_raw_top1,
+                    best_ema_top1=best_ema_top1,
                 )
                 print(
                     f"  [Val] Loss: {val_metrics['loss']:.4f} | "
-                    f"mIoU: {val_metrics['top1/mIoU']:.4f}"
-                    + ("  [best]" if is_best else "")
+                    f"mIoU: {raw_mIoU:.4f}"
+                    + raw_tag
                 )
     finally:
         run.finish()
