@@ -1,9 +1,3 @@
-"""
-체크포인트 저장/복원 유틸.
-
-AMP/EMA state 선택적 포함.
-"""
-
 from __future__ import annotations
 
 import os
@@ -20,22 +14,25 @@ def save_checkpoint(
     optimizer,
     scaler=None,
     ema=None,
-    best_val_top1: float = 0.0,
     cfg: Optional[dict] = None,
+    wandb_run_id: Optional[str] = None,
+    best_ema_miou: float = 0.0,
 ) -> None:
-    """best ckpt 저장."""
+    """Save a resumable training checkpoint."""
     state = {
         "iter": iter_count,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-        "best_val_top1": best_val_top1,
+        "best_ema_miou": best_ema_miou,
     }
     if scaler is not None:
-        state["scaler_state_dict"] = scaler.state_dict()  # AMP resume용
+        state["scaler_state_dict"] = scaler.state_dict()
     if ema is not None:
-        state["ema_state_dict"] = ema.state_dict()        # EMA resume / --use_ema용
+        state["ema_state_dict"] = ema.state_dict()
     if cfg is not None:
         state["config"] = cfg
+    if wandb_run_id is not None:
+        state["wandb_run_id"] = wandb_run_id
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(state, path)
@@ -49,12 +46,8 @@ def load_checkpoint(
     ema=None,
     device: Optional[torch.device] = None,
 ) -> dict:
-    """
-    체크포인트 로드 후 메타 정보 반환.
-
-    반환: {"iter": ..., "best_val_top1": ...}
-    """
-    ckpt = torch.load(path, map_location=device)
+    """Load a training checkpoint and return its small metadata block."""
+    ckpt = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])
 
     if optimizer is not None and "optimizer_state_dict" in ckpt:
@@ -66,6 +59,6 @@ def load_checkpoint(
 
     return {
         "iter": ckpt.get("iter", 0),
-        "best_val_top1": ckpt.get("best_val_top1", 0.0),
+        "best_ema_miou": ckpt.get("best_ema_miou", ckpt.get("best_val_top1", 0.0)),
         "has_ema": "ema_state_dict" in ckpt,
     }

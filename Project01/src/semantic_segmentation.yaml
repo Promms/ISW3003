@@ -1,53 +1,53 @@
 model:
-  backbone: "mobilenet"    # "mobilenet" | "efficientnet"
   num_classes: 21
 
 data:
   root: "/content/data"
   dataset_name: "pascal_voc"
   years: ["2007", "2012"]
-  num_workers: 2           # nproc과 맞춤 (Colab free 2 vCPU). 4 이상은 context switch 손해
-  crop_size: 384           # val 480x640과의 해상도 갭 축소 (288→384)
+  crop_size: 384
+  num_workers: 2
+  val_num_workers: 0
+  val_split: "val"
   download: false
   pin_memory: true
-  preload: true              # VOC 전체 RAM 적재 (~2GB). COCO 합류해도 VOC만 preload는 유지 OK
-  coco:                      # COCO 2017 → VOC 21-class 매핑 합류 (enabled=false로 끌 수 있음)
+  preload: true
+  coco:
     enabled: true
     img_root: "/content/coco/train2017"
     ann_file: "/content/coco/annotations/instances_train2017.json"
-    filter_empty: true       # VOC 매핑 클래스 없는 이미지 제외 (~118k → ~65k)
+    filter_empty: true
     overlap_policy: "smallest_first"
-    mask_cache_dir: "/content/coco/voc_masks"   # 사전 렌더된 VOC-index PNG 폴더
-                                                # 없으면 annToMask 폴백 (학습 2~3배 느려짐)
+    mask_cache_dir: "/content/coco/voc_masks"
 
 training:
-  batch_size: 24             # crop 288→384 메모리 보전 + I/O 병목 완화 (48→24)
-  val_batch_size: 16         # val은 no_grad. DiceLoss one-hot 때문에 train batch 보단 낮춤
-  total_iters: 100000        # 50k → 100k (COCO 합류 + 100k 학습으로 수렴)
+  batch_size: 24
+  val_batch_size: 16
+  total_iters: 100000
   log_interval: 100
   eval_interval: 4000
-  learning_rate: 1.0e-3      # 유지 (V3 1.4e-3 진동 → 1.0e-3으로 안정)
+  learning_rate: 1.0e-3
+  backbone_lr_scale: 0.5
   weight_decay: 1.0e-4
-  resume: false              # true: 기존 best_{run_name}.pth 에서 이어받기 / false: 처음부터
-  freeze_iters: 3000         # 유지 (head 고착 피하면서 안정화 여유)
-  backbone_lr_scale: 0.5     # 0.3→0.5 (COCO 합류 분포에 backbone 적응 우선)
-  warmup_iters: 500          # 초반 500 iter 선형 warmup
+  warmup_iters: 500
+  freeze_iters: 3000
+  resume: false
   amp: true
-  ema_update_every: 8       # 매 iter → 8 iter마다 (decay=0.9998^8≈0.9984, 체감 차이 미미)
-  # --- EMA ---
-  ema: true
+  dice_weight: 1.0
+  lovasz_weight: 0.5
   ema_decay: 0.9998
-  ema_eval_interval: 10000
+  ema_update_every: 8
 
 checkpoint:
-  dir: "/content/drive/MyDrive/checkpoints"   # 체크포인트 저장 폴더
-  # 파일명은 자동으로 "best_{run_name}.pth" — run_name 바꾸면 다른 파일로 저장됨
-  # (예: run_name="MobileNet_V5" → best_MobileNet_V5.pth)
+  dir: "/content/drive/MyDrive/checkpoints"
+  # train.py writes only:
+  #   best_ema_<run_name>.pth
+  #   last_<run_name>.pth
 
 wandb:
   team: "tmdgk115-sungkyunkwan-university"
   project: "osai-project01"
-  run_name: "MobileNet_V5"
+  run_name: "MobileNet_Project01"
 
 device: "cuda"
 seed: 42
