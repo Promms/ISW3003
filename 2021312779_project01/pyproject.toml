@@ -1,0 +1,16 @@
+[project]
+name = "2021312779_project01"
+version = "0.1.0"
+description = "Project 1 semantic segmentation submission using DeepLabV3+ with an EfficientNet-B1 backbone."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python>=4.9",
+    "pillow>=10.0",
+    "pycocotools>=2.0",
+    "torch>=2.1",
+    "torchvision>=0.16",
+    "wandb>=0.16",
+    "pyyaml>=6.0",
+]
