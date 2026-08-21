@@ -1,0 +1,34 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info/
+
+# Virtual environments and editor settings
+.venv/
+.vscode/
+.claude/
+.codex-flow/
+.DS_Store
+
+# Local datasets
+**/data/VOCdevkit/
+cifar10_resnet_gan/data/cifar10_raw/
+student_baseline_v0520/
+
+# Archives and model artifacts
+*.tar
+*.tar.gz
+*.pth
+*.pt
+*.onnx
+**/checkpoints/
+
+# Experiment outputs
+**/wandb/
+**/fid_outputs/
+cifar10_resnet_gan/visualization/**/*.png
+efficient_semantic_segmentation/submit/pred/*.png
+*.log

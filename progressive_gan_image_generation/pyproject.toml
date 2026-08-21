@@ -1,0 +1,22 @@
+[project]
+name = "progressive_gan_image_generation"
+version = "0.1.0"
+description = "Progressive GAN training and FFHQ image generation"
+requires-python = ">=3.10"
+dependencies = [
+  "torch",
+  "torchvision",
+  "pillow",
+  "matplotlib",
+  "wandb",
+  "pytorch-fid",
+  "pyyaml",
+  "onnx",
+  "onnxscript",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

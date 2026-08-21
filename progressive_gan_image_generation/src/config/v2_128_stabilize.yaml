@@ -1,0 +1,87 @@
+﻿seed: 42
+device: cuda
+
+model:
+  name: progressive_residual_r3gan
+  z_dim: 512
+  image_size: 128
+  expansion: 2
+  generator:
+    widths: [768, 768, 768, 768, 512, 256, 128, 96, 96]
+    blocks_per_stage: [2, 2, 2, 2, 2, 2, 2, 2, 2]
+    cardinality: [96, 96, 96, 96, 64, 32, 16, 12, 12]
+  discriminator:
+    widths: [768, 768, 768, 768, 512, 256, 192, 128, 96]
+    blocks_per_stage: [2, 2, 2, 2, 2, 2, 2, 2, 2]
+    cardinality: [96, 96, 96, 96, 64, 32, 24, 16, 12]
+
+progressive:
+  resolution: 128
+  stage_mode: stabilize
+  stage_id: 128_stabilize
+  alpha: 1.0
+
+data:
+  train_root: /content/data/train_50k_256
+  valid_root: /content/data/valid_10k_256
+  test_root: null
+  image_size: 128
+  batch_size: 64
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  horizontal_flip: true
+  cache_mode: shm_files
+  normalize_on_gpu: false
+  shm_root: /dev/shm/project02_train_256
+  refresh_shm_cache: false
+
+training:
+  loss: r3gan
+  total_steps: 10000
+  grad_accum_steps: 1
+  g_lr: 0.0002
+  d_lr: 0.0002
+  beta1: 0.0
+  beta2: 0.99
+  r3_gamma: 5.0
+  ema_beta: 0.999
+  amp:
+    enabled: true
+    dtype: bf16
+    grad_penalty_fp32: false
+  init_from:
+    enabled: true
+    checkpoint: checkpoints/v2/128_transition/model.pth
+  consistency:
+    enabled: false
+    weight: 0.0
+  log_interval: 100
+  ckpt_interval: 2500
+  output_dir: checkpoints/v2/128_stabilize
+  resume: null
+  resume_mode: strict
+  fid:
+    enabled: true
+    interval: 2500
+    num_real_images: 1024
+    num_fake_images: 1024
+    subset_seed: 1234
+    batch_size: 64
+    export_batch_size: 64
+    dims: 2048
+    device: cuda
+    fail_on_error: false
+    use_ema: true
+
+sampling:
+  num_images: 64
+  nrow: 8
+
+wandb:
+  enabled: true
+  entity: tmdgk115-sungkyunkwan-university
+  project: osai-project02
+  mode: online
+  run_name: v2-128-stabilize

@@ -1,0 +1,11 @@
+[project]
+name = "segmentation_data_augmentation"
+version = "0.1.0"
+description = "Joint image and mask augmentation for semantic segmentation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.4",
+    "pillow>=11.0.0",
+]

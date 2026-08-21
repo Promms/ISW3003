@@ -1,0 +1,28 @@
+﻿# v2 Progressive R3GAN stage manifest.
+#
+# Usage:
+#   python -m project02.train_wrapper --pipeline-config src/config/v2_pipeline.yaml
+#
+# The wrapper reads each stage config in order, writes a runtime config under
+# work_dir/configs, and launches project02.train. It only injects output_dir,
+# resume/init_from, and transition teacher checkpoint paths.
+
+work_dir: checkpoints/v2
+checkpoint_name: model.pth
+entrypoint: project02.train
+
+stages:
+  - id: 64_base
+    config: v2_64_base.yaml
+  - id: 128_transition
+    config: v2_128_transition.yaml
+  - id: 128_stabilize
+    config: v2_128_stabilize.yaml
+  - id: 256_transition
+    config: v2_256_transition.yaml
+  - id: 256_stabilize
+    config: v2_256_stabilize.yaml
+  - id: 512_transition
+    config: v2_512_transition.yaml
+  - id: 512_stabilize
+    config: v2_512_stabilize.yaml

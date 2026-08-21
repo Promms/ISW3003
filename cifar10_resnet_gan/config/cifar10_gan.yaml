@@ -1,0 +1,35 @@
+model:
+  z_dim: 128
+  g_base_channels: 256       # generator ResBlock channel width
+  d_base_channels: 128       # discriminator ResBlock channel width
+
+data:
+  root: "./data/cifar10_raw" # torchvision will download here
+  num_workers: 2
+  pin_memory: true
+
+training:
+  batch_size: 64
+  total_iters: 30000         # one iter == n_critic D updates + 1 G update
+  n_critic: 3                # D updates per G update (k)
+  g_lr: 2.0e-4
+  d_lr: 2.0e-4
+  beta1: 0.0                 # ResNet-GAN style Adam betas
+  beta2: 0.9
+  log_interval: 100
+  sample_interval: 500       # save sample grid every N iters
+  ckpt_interval: 5000        # save checkpoint every N iters
+  sample_dir: "visualization/n3"
+  ckpt_path: "gan_checkpoint.pth"
+  num_sample_images: 64      # 8x8 grid
+
+device: "cuda"
+seed: 42
+
+wandb:
+  enabled: true
+  entity: "tmdgk115-sungkyunkwan-university"
+  project: "osai-lab07"
+  url: "https://wandb.ai/tmdgk115-sungkyunkwan-university/osai-lab07"
+  mode: "online"
+  run_name: "cifar10-gan"
